@@ -74,7 +74,6 @@ app.post("/book-demo", async (req, res) => {
       name,
       email,
       start,
-      end,
       timeZone
     } = req.body;
 
@@ -82,7 +81,8 @@ app.post("/book-demo", async (req, res) => {
       zone: timeZone
     });
 
-    const endDT = startDT.plus({ hours: 8 });
+    // Meeting duration = 30 minutes
+    const endDT = startDT.plus({ minutes: 30 });
 
     const searchStart = startDT.toFormat("yyyy-MM-dd'T'HH:mm:ss");
     const searchEnd = endDT.toFormat("yyyy-MM-dd'T'HH:mm:ss");
@@ -112,13 +112,15 @@ app.post("/book-demo", async (req, res) => {
     const availability = schedule.value[0].availabilityView;
     const suggestions = [];
 
-    for (let i = 0; i < availability.length; i++) {
+   for (let i = 0; i < availability.length; i++) {
       if (availability[i] === "0") {
-        const slot = new Date(
-          new Date(searchStart).getTime() + i * 30 * 60 * 1000
-        );
+        const slot = startDT.plus({ minutes: i * 30 });
 
-        suggestions.push(slot.toISOString());
+        suggestions.push(
+          slot
+            .setZone(timeZone)
+            .toFormat("cccc, LLL d 'at' h:mm a")
+        );
 
         if (suggestions.length === 3) break;
       }
@@ -145,12 +147,12 @@ app.post("/book-demo", async (req, res) => {
       },
 
       start: {
-        dateTime: start,
+        dateTime: startDT.toFormat("yyyy-MM-dd'T'HH:mm:ss"),
         timeZone: timeZone
       },
 
       end: {
-        dateTime: end,
+        dateTime: endDT.toFormat("yyyy-MM-dd'T'HH:mm:ss"),
         timeZone: timeZone
       },
 
@@ -170,7 +172,7 @@ app.post("/book-demo", async (req, res) => {
 
     const result = await graphClient
       .api(`/users/${process.env.USER_EMAIL}/calendar/events`)
-      .header("Prefer", 'outlook.timezone="Asia/Kolkata"')
+      .header("Prefer", `outlook.timezone="${timeZone}"`)
       .post(event);
 
     res.json({
@@ -196,7 +198,13 @@ app.post("/check-availability", async (req, res) => {
 
   try {
 
-    const { start, end, timeZone } = req.body;
+    const { start, timeZone } = req.body;
+
+    const startDT = DateTime.fromISO(start, {
+      zone: timeZone
+    });
+
+    const endDT = startDT.plus({ minutes: 30 });
 
     const result = await graphClient
       .api(`/users/${process.env.USER_EMAIL}/calendar/getSchedule`)
@@ -207,12 +215,12 @@ app.post("/check-availability", async (req, res) => {
         ],
 
         startTime: {
-          dateTime: start,
+          dateTime: startDT.toFormat("yyyy-MM-dd'T'HH:mm:ss"),
           timeZone: timeZone
         },
 
         endTime: {
-          dateTime: end,
+          dateTime: endDT.toFormat("yyyy-MM-dd'T'HH:mm:ss"),
           timeZone: timeZone
         },
 
