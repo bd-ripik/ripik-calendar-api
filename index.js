@@ -70,6 +70,8 @@ app.get("/calendar", async (req, res) => {
 app.post("/book-demo", async (req, res) => {
   try {
 
+    console.log("BOOK DEMO REQUEST:", req.body);
+    
     const {
       name,
       email,
@@ -119,12 +121,12 @@ app.post("/book-demo", async (req, res) => {
         suggestions.push(
           slot
             .setZone(timeZone)
-            .toFormat("cccc, LLL d 'at' h:mm a")
+          .toFormat("cccc, LLL d 'at' h:mm a")
         );
 
-        if (suggestions.length === 3) break;
-      }
-    }
+    if (suggestions.length === 3) break;
+  }
+}
 
     if (isBusy) {
       return res.status(409).json({
