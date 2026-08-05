@@ -9,10 +9,15 @@ const { Client } = require("@microsoft/microsoft-graph-client");
 const app = express();
 app.use(express.json());
 
+console.log("TENANT:", process.env.AZURE_TENANT_ID);
+console.log("CLIENT:", process.env.AZURE_CLIENT_ID);
+console.log("SECRET:", !!process.env.AZURE_CLIENT_SECRET);
+console.log("USER:", process.env.USER_EMAIL);
+
 const credential = new ClientSecretCredential(
-  process.env.TENANT_ID,
-  process.env.CLIENT_ID,
-  process.env.CLIENT_SECRET
+  process.env.AZURE_TENANT_ID,
+  process.env.AZURE_CLIENT_ID,
+  process.env.AZURE_CLIENT_SECRET
 );
 
 const authProvider = {
