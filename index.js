@@ -71,7 +71,7 @@ app.post("/book-demo", async (req, res) => {
   try {
 
     console.log("BOOK DEMO REQUEST:", req.body);
-    
+
     const {
       name,
       email,
@@ -241,6 +241,23 @@ app.post("/check-availability", async (req, res) => {
     });
 
   }
+
+});
+
+app.get("/current-time", (req, res) => {
+
+  const timeZone = req.query.timeZone || "UTC";
+
+  const now = DateTime.now().setZone(timeZone);
+
+  res.json({
+    currentDate: now.toFormat("yyyy-MM-dd"),
+    currentTime: now.toFormat("HH:mm:ss"),
+    currentDateTime: now.toISO({
+      suppressMilliseconds: true
+    }),
+    timeZone
+  });
 
 });
 
