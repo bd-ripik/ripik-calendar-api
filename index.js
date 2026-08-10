@@ -261,6 +261,41 @@ app.get("/current-time", (req, res) => {
 
 });
 
+app.post("/schedule-callback", async (req, res) => {
+  try {
+    const {
+      name,
+      phone,
+      callback_time,
+      time_zone
+    } = req.body;
+
+    console.log("Callback requested:", {
+      name,
+      phone,
+      callback_time,
+      time_zone
+    });
+
+    res.json({
+      success: true,
+      message: "Callback scheduled",
+      name,
+      phone,
+      callback_time,
+      time_zone
+    });
+
+  } catch (err) {
+    console.error("Callback scheduling error:", err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
 app.listen(process.env.PORT, () => {
   console.log(`Server running on port ${process.env.PORT}`);
 });
