@@ -1,5 +1,6 @@
 require("dotenv").config();
 require("isomorphic-fetch");
+const { Pool } = require("pg");
 
 const express = require("express");
 const { DateTime } = require("luxon");
@@ -8,6 +9,13 @@ const { Client } = require("@microsoft/microsoft-graph-client");
 
 const app = express();
 app.use(express.json());
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
+});
 
 console.log("TENANT:", process.env.AZURE_TENANT_ID);
 console.log("CLIENT:", process.env.AZURE_CLIENT_ID);
@@ -261,6 +269,62 @@ app.get("/current-time", (req, res) => {
 
 });
 
+async function makeRetellCallback({ phone, name }) {
+  const response = await fetch(
+    "https://api.retellai.com/v2/create-phone-call",
+    {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.RETELL_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        from_number: process.env.RETELL_FROM_NUMBER,
+        to_number: phone,
+        retell_llm_dynamic_variables: {
+          prospect_name: name,
+          callback_context: "The prospect previously asked to be called back."
+        }
+      })
+    }
+  );
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      `Retell callback failed: ${JSON.stringify(data)}`
+    );
+  }
+
+  return data;
+}
+
+
+app.post("/test-retell-callback", async (req, res) => {
+  try {
+    const { phone, name } = req.body;
+
+    const result = await makeRetellCallback({
+      phone,
+      name
+    });
+
+    res.json({
+      success: true,
+      retell: result
+    });
+
+  } catch (err) {
+    console.error("Test callback error:", err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
 app.post("/schedule-callback", async (req, res) => {
   try {
     const {
@@ -270,20 +334,26 @@ app.post("/schedule-callback", async (req, res) => {
       time_zone
     } = req.body;
 
-    console.log("Callback requested:", {
-      name,
-      phone,
-      callback_time,
-      time_zone
-    });
+    const result = await pool.query(
+      `
+      INSERT INTO callbacks
+        (name, phone, callback_time, time_zone, status)
+      VALUES
+        ($1, $2, $3, $4, 'pending')
+      RETURNING *
+      `,
+      [
+        name,
+        phone,
+        callback_time,
+        time_zone
+      ]
+    );
 
     res.json({
       success: true,
       message: "Callback scheduled",
-      name,
-      phone,
-      callback_time,
-      time_zone
+      callback: result.rows[0]
     });
 
   } catch (err) {
@@ -296,6 +366,77 @@ app.post("/schedule-callback", async (req, res) => {
   }
 });
 
-app.listen(process.env.PORT, () => {
-  console.log(`Server running on port ${process.env.PORT}`);
-});
+async function processDueCallbacks() {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM callbacks
+      WHERE status = 'pending'
+        AND callback_time <= NOW()
+      ORDER BY callback_time ASC
+      LIMIT 10
+    `);
+
+    for (const callback of result.rows) {
+      try {
+        console.log("Processing callback:", callback);
+
+        const retellResult = await makeRetellCallback({
+          phone: callback.phone,
+          name: callback.name
+        });
+
+        await pool.query(
+          `
+          UPDATE callbacks
+          SET status = 'completed'
+          WHERE id = $1
+          `,
+          [callback.id]
+        );
+
+        console.log("Callback completed:", {
+          id: callback.id,
+          call_id: retellResult.call_id
+        });
+
+      } catch (err) {
+        console.error(
+          `Callback failed for ID ${callback.id}:`,
+          err.message
+        );
+      }
+    }
+
+  } catch (err) {
+    console.error("Callback worker error:", err);
+  }
+}
+
+async function initDatabase() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS callbacks (
+      id SERIAL PRIMARY KEY,
+      name TEXT,
+      phone TEXT NOT NULL,
+      callback_time TIMESTAMPTZ NOT NULL,
+      time_zone TEXT,
+      status TEXT DEFAULT 'pending',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
+  console.log("Callbacks table ready");
+}
+
+initDatabase()
+  .then(() => {
+    app.listen(process.env.PORT, () => {
+      console.log(`Server running on port ${process.env.PORT}`);
+    });
+    setInterval(processDueCallbacks, 60 * 1000);
+  })
+  .catch((err) => {
+    console.error("Database initialization failed:", err);
+    process.exit(1);
+  });
