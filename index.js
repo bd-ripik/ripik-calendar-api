@@ -269,6 +269,94 @@ app.get("/current-time", (req, res) => {
 
 });
 
+app.post("/resolve-timezone", async (req, res) => {
+  try {
+    const { city, state, country } = req.body;
+
+    console.log("RESOLVE TIMEZONE REQUEST:", {
+      city,
+      state,
+      country
+    });
+
+    // Common country-wide timezones
+    const countryMap = {
+      "india": "Asia/Kolkata",
+      "united kingdom": "Europe/London",
+      "uk": "Europe/London",
+      "singapore": "Asia/Singapore",
+      "japan": "Asia/Tokyo",
+      "south korea": "Asia/Seoul",
+      "uae": "Asia/Dubai",
+      "united arab emirates": "Asia/Dubai"
+    };
+
+    const normalizedCountry = (country || "").trim().toLowerCase();
+
+    if (countryMap[normalizedCountry]) {
+      return res.json({
+        success: true,
+        time_zone: countryMap[normalizedCountry],
+        source: "country"
+      });
+    }
+
+    // US state → timezone mapping
+    const stateMap = {
+      "new york": "America/New_York",
+      "new jersey": "America/New_York",
+      "pennsylvania": "America/New_York",
+      "massachusetts": "America/New_York",
+      "virginia": "America/New_York",
+      "north carolina": "America/New_York",
+      "south carolina": "America/New_York",
+      "georgia": "America/New_York",
+      "florida": "America/New_York",
+
+      "illinois": "America/Chicago",
+      "texas": "America/Chicago",
+      "wisconsin": "America/Chicago",
+      "minnesota": "America/Chicago",
+      "louisiana": "America/Chicago",
+
+      "colorado": "America/Denver",
+      "utah": "America/Denver",
+      "new mexico": "America/Denver",
+
+      "california": "America/Los_Angeles",
+      "washington": "America/Los_Angeles",
+      "oregon": "America/Los_Angeles",
+      "nevada": "America/Los_Angeles"
+    };
+
+    const normalizedState = (state || "").trim().toLowerCase();
+
+    if (stateMap[normalizedState]) {
+      return res.json({
+        success: true,
+        time_zone: stateMap[normalizedState],
+        source: "state"
+      });
+    }
+
+    // Could not confidently determine timezone
+    return res.json({
+      success: false,
+      time_zone: null,
+      source: null,
+      message: "Timezone could not be determined reliably. Ask the prospect for their timezone."
+    });
+
+  } catch (err) {
+    console.error("Timezone resolution error:", err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
 async function makeRetellCallback({ phone, name }) {
   const response = await fetch(
     "https://api.retellai.com/v2/create-phone-call",
