@@ -454,6 +454,37 @@ app.post("/schedule-callback", async (req, res) => {
   }
 });
 
+app.post("/retell-webhook", async (req, res) => {
+  try {
+    const { event, call } = req.body;
+
+    console.log("RETELL WEBHOOK EVENT:", event);
+
+    console.log("RETELL CALL DATA:", {
+      call_id: call?.call_id,
+      call_status: call?.call_status,
+      disconnection_reason: call?.disconnection_reason,
+      from_number: call?.from_number,
+      to_number: call?.to_number,
+      direction: call?.direction,
+      duration_ms: call?.duration_ms,
+      call_analysis: call?.call_analysis
+    });
+
+    return res.status(200).json({
+      success: true
+    });
+
+  } catch (err) {
+    console.error("Retell webhook error:", err);
+
+    return res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
 async function processDueCallbacks() {
   try {
     const result = await pool.query(`
