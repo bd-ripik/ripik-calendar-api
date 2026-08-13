@@ -617,6 +617,9 @@ app.post("/retell-webhook", async (req, res) => {
 
     const prospectOutcome = customAnalysis?.prospect_outcome;
 
+    // Retell voicemail detection
+    const inVoicemail = analysis?.in_voicemail === true;
+
     const automaticRetryAllowed =
       customAnalysis?.automatic_retry_allowed === true;
 
@@ -646,8 +649,9 @@ app.post("/retell-webhook", async (req, res) => {
       prospectOutcome === "no_meaningful_conversation";
 
     const shouldRetry =
-      retryBecauseOfDisconnect || retryBecauseOfAnalysis;
-
+      retryBecauseOfDisconnect ||
+      retryBecauseOfAnalysis ||
+      inVoicemail;
 
     // =========================================================
     // STEP A — Is this call already part of an existing retry?
@@ -672,6 +676,7 @@ app.post("/retell-webhook", async (req, res) => {
         retry_count: retry.retry_count,
         call_id: callId,
         reason: disconnectReason,
+        voicemail: inVoicemail,
         outcome: prospectOutcome
       });
 
