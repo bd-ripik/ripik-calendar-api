@@ -357,7 +357,31 @@ app.post("/resolve-timezone", async (req, res) => {
   }
 });
 
+async function isDnd(phone) {
+  const result = await pool.query(
+    `
+    SELECT 1
+    FROM dnd_numbers
+    WHERE phone = $1
+    LIMIT 1
+    `,
+    [phone]
+  );
+
+  return result.rows.length > 0;
+}
+
 async function makeRetellCallback({ phone, name }) {
+
+  if (await isDnd(phone)) {
+    console.log("CALL BLOCKED BY DND:", phone);
+
+    return {
+      blocked: true,
+      reason: "dnd"
+    };
+  }
+
   const response = await fetch(
     "https://api.retellai.com/v2/create-phone-call",
     {
@@ -389,6 +413,16 @@ async function makeRetellCallback({ phone, name }) {
 }
 
 async function makeRetellRetry({ phone, name }) {
+
+  if (await isDnd(phone)) {
+    console.log("RETRY BLOCKED BY DND:", phone);
+
+    return {
+      blocked: true,
+      reason: "dnd"
+    };
+  }
+
   const response = await fetch(
     "https://api.retellai.com/v2/create-phone-call",
     {
@@ -479,6 +513,69 @@ app.post("/schedule-callback", async (req, res) => {
     console.error("Callback scheduling error:", err);
 
     res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+app.post("/add-dnd", async (req, res) => {
+  try {
+    const { phone, reason } = req.body;
+
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        error: "Phone number is required"
+      });
+    }
+
+    await pool.query(
+      `
+      INSERT INTO dnd_numbers (phone, reason)
+      VALUES ($1, $2)
+      ON CONFLICT (phone)
+      DO UPDATE SET reason = EXCLUDED.reason
+      `,
+      [
+        phone,
+        reason || "Prospect requested do not call"
+      ]
+    );
+
+    await pool.query(
+      `
+      UPDATE callbacks
+      SET status = 'cancelled'
+      WHERE phone = $1
+        AND status = 'pending'
+      `,
+      [phone]
+    );
+
+    await pool.query(
+      `
+      UPDATE call_retries
+      SET status = 'cancelled',
+          updated_at = NOW()
+      WHERE phone = $1
+        AND status IN ('pending', 'processing', 'waiting_result')
+      `,
+      [phone]
+    );
+
+    console.log("DND ADDED:", phone);
+
+    return res.json({
+      success: true,
+      message: "Phone number added to DND and pending calls cancelled",
+      phone
+    });
+
+  } catch (err) {
+    console.error("DND error:", err);
+
+    return res.status(500).json({
       success: false,
       error: err.message
     });
@@ -793,6 +890,20 @@ async function processDueCallbacks() {
           name: callback.name
         });
 
+        if (retellResult.blocked) {
+          await pool.query(
+            `
+            UPDATE callbacks
+            SET status = 'cancelled'
+            WHERE id = $1
+            `,
+            [callback.id]
+          );
+
+          console.log("Callback cancelled due to DND:", callback.id);
+          continue;
+        }
+
         await pool.query(
           `
           UPDATE callbacks
@@ -861,6 +972,21 @@ async function processDueRetries() {
           phone: retry.phone,
           name: retry.name
         });
+
+        if (retellResult.blocked) {
+          await pool.query(
+            `
+            UPDATE call_retries
+            SET status = 'cancelled',
+              updated_at = NOW()
+            WHERE id = $1
+            `,
+            [retry.id]
+          );
+
+          console.log("Retry cancelled due to DND:", retry.id);
+          continue;
+        }
 
         const newRetryCount = retry.retry_count + 1;
 
@@ -938,7 +1064,7 @@ async function initDatabase() {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
-  
+
   await pool.query(`
     ALTER TABLE call_retries
     ADD COLUMN IF NOT EXISTS current_call_id TEXT
@@ -949,7 +1075,16 @@ async function initDatabase() {
     ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ
   `);
 
-  console.log("Callbacks and retry tables ready");
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS dnd_numbers (
+      id SERIAL PRIMARY KEY,
+      phone TEXT UNIQUE NOT NULL,
+      reason TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  
+  console.log("Callbacks, retry and DND tables ready");
 }
 
 initDatabase()
