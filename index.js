@@ -468,7 +468,8 @@ app.post("/retell-webhook", async (req, res) => {
       to_number: call?.to_number,
       direction: call?.direction,
       duration_ms: call?.duration_ms,
-      call_analysis: call?.call_analysis
+      call_analysis: call?.call_analysis,
+      custom_analysis_data: call?.call_analysis?.custom_analysis_data
     });
 
     return res.status(200).json({
