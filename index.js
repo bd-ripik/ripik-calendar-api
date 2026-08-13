@@ -472,8 +472,116 @@ app.post("/retell-webhook", async (req, res) => {
       custom_analysis_data: call?.call_analysis?.custom_analysis_data
     });
 
+    // Only make retry decisions after Retell has finished analyzing the call.
+    if (event !== "call_analyzed") {
+      return res.status(200).json({
+        success: true,
+        message: "Event received - no retry decision required"
+      });
+    }
+
+    const callId = call?.call_id;
+    const phone = call?.to_number;
+    const disconnectReason = call?.disconnection_reason;
+    const analysis = call?.call_analysis;
+    const customAnalysis = analysis?.custom_analysis_data;
+
+    const prospectOutcome = customAnalysis?.prospect_outcome;
+    const automaticRetryAllowed =
+      customAnalysis?.automatic_retry_allowed === true;
+
+    if (!callId || !phone) {
+      console.log("RETRY SKIPPED: Missing call ID or phone number");
+
+      return res.status(200).json({
+        success: true,
+        retry_scheduled: false
+      });
+    }
+
+    // These Retell/dial outcomes are candidates for an automatic retry.
+    const retryableDisconnectReasons = [
+      "dial_no_answer",
+      "dial_busy",
+      "dial_failed"
+    ];
+
+    const retryBecauseOfDisconnect =
+      retryableDisconnectReasons.includes(disconnectReason);
+
+    const retryBecauseOfAnalysis =
+      automaticRetryAllowed === true &&
+      prospectOutcome === "no_meaningful_conversation";
+
+    const shouldRetry =
+      retryBecauseOfDisconnect || retryBecauseOfAnalysis;
+
+    if (!shouldRetry) {
+      console.log(
+        `RETRY SKIPPED: ${callId} | reason=${disconnectReason} | outcome=${prospectOutcome}`
+      );
+
+      return res.status(200).json({
+        success: true,
+        retry_scheduled: false
+      });
+    }
+
+    // Prevent the same Retell call from creating duplicate retry jobs.
+    const existingRetry = await pool.query(
+      `
+      SELECT id
+      FROM call_retries
+      WHERE original_call_id = $1
+      LIMIT 1
+      `,
+      [callId]
+    );
+
+    if (existingRetry.rows.length > 0) {
+      console.log(`RETRY SKIPPED: Retry already exists for ${callId}`);
+
+      return res.status(200).json({
+        success: true,
+        retry_scheduled: false,
+        duplicate: true
+      });
+    }
+
+    // First automatic retry: 2 hours later.
+    const nextRetryTime = new Date(Date.now() + 2 * 60 * 60 * 1000);
+
+    await pool.query(
+      `
+      INSERT INTO call_retries
+        (
+          original_call_id,
+          phone,
+          retry_count,
+          next_retry_time,
+          status,
+          last_outcome
+        )
+      VALUES ($1, $2, $3, $4, $5, $6)
+      `,
+      [
+        callId,
+        phone,
+        0,
+        nextRetryTime,
+        "pending",
+        prospectOutcome || disconnectReason || "unknown"
+      ]
+    );
+
+    console.log(
+      `AUTO RETRY QUEUED: ${phone} at ${nextRetryTime.toISOString()}`
+    );
+
     return res.status(200).json({
-      success: true
+      success: true,
+      retry_scheduled: true,
+      next_retry_time: nextRetryTime.toISOString()
     });
 
   } catch (err) {
@@ -546,7 +654,22 @@ async function initDatabase() {
     )
   `);
 
-  console.log("Callbacks table ready");
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS call_retries (
+      id SERIAL PRIMARY KEY,
+      original_call_id TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      name TEXT,
+      retry_count INTEGER DEFAULT 0,
+      next_retry_time TIMESTAMPTZ,
+      status TEXT DEFAULT 'pending',
+      last_outcome TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
+  console.log("Callbacks and retry tables ready");
 }
 
 initDatabase()
