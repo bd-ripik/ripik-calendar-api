@@ -145,7 +145,7 @@ app.post("/book-demo", async (req, res) => {
     }
 
     const event = {
-      subject: `Ripik AI Demo - ${name}`,
+      subject: `Ripik <> ${name} - Vision AI Demo Walkthrough`,
       body: {
         contentType: "HTML",
         content: `
