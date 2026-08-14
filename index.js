@@ -1097,7 +1097,7 @@ initDatabase()
     app.listen(process.env.PORT, () => {
       console.log(`Server running on port ${process.env.PORT}`);
     });
-    setInterval(processDueCallbacks, 60 * 1000);
+    setInterval(processDueCallbacks, 10 * 1000);
     setInterval(processDueRetries, 60 * 1000);
   })
   .catch((err) => {
