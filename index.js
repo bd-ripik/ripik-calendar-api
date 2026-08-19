@@ -582,6 +582,20 @@ app.post("/add-dnd", async (req, res) => {
   }
 });
 
+function getVoicemailRetryDelayMs(retryCount) {
+  // retryCount = number of retries already PLACED
+
+  const schedule = {
+    0: 1 * 60 * 60 * 1000,       // Retry #1: +1 hour
+    1: 2 * 60 * 60 * 1000,       // Retry #2: +2 hours
+    2: 24 * 60 * 60 * 1000,      // Retry #3: +1 day
+    3: 2 * 60 * 60 * 1000,       // Retry #4: +2 hours
+    4: 24 * 60 * 60 * 1000       // Retry #5: +1 day
+  };
+
+  return schedule[retryCount] ?? null;
+}
+
 app.post("/retell-webhook", async (req, res) => {
   try {
     const { event, call } = req.body;
@@ -638,7 +652,9 @@ app.post("/retell-webhook", async (req, res) => {
     const retryableDisconnectReasons = [
       "dial_no_answer",
       "dial_busy",
-      "dial_failed"
+      "dial_failed",
+      "inactivity"
+
     ];
 
     const retryBecauseOfDisconnect =
@@ -712,70 +728,146 @@ app.post("/retell-webhook", async (req, res) => {
       }
 
 
-      // Two automatic retry attempts have already been made.
-      if (retry.retry_count >= 2) {
+    // =========================================================
+    // Decide retry limit and next retry time
+    // =========================================================
 
-        await pool.query(
-          `
-          UPDATE call_retries
-          SET status = 'exhausted',
-              last_outcome = $1,
-              updated_at = NOW()
-          WHERE id = $2
-          `,
-          [
-            prospectOutcome ||
-              disconnectReason ||
-              "retry_exhausted",
-            retry.id
-          ]
-        );
+    const retryType = retry.retry_type || "standard";
 
-        console.log(
-          `RETRY CHAIN EXHAUSTED: ${retry.id}`
-        );
-
-        return res.status(200).json({
-          success: true,
-          retry_scheduled: false,
-          retry_chain_exhausted: true
-        });
-      }
+    const maxRetries =
+      retryType === "voicemail" ? 5 : 2;
 
 
-      // Retry #1 failed.
-      // Schedule Retry #2 for 24 hours later.
-      const nextRetryTime =
-        new Date(Date.now() + 24 * 60 * 60 * 1000);
+    // Maximum attempts for this retry chain have been reached.
+    if (retry.retry_count >= maxRetries) {
 
       await pool.query(
         `
         UPDATE call_retries
-        SET status = 'pending',
-            next_retry_time = $1,
-            last_outcome = $2,
+        SET status = 'exhausted',
+            last_outcome = $1,
+            next_retry_time = NULL,
             updated_at = NOW()
-        WHERE id = $3
+        WHERE id = $2
         `,
         [
-          nextRetryTime,
-          prospectOutcome ||
-            disconnectReason ||
-            "retry_needed",
+          retryType === "voicemail"
+            ? "voicemail_retry_exhausted"
+            : (
+                prospectOutcome ||
+                disconnectReason ||
+                "retry_exhausted"
+              ),
+          retry.id
+        ]
+      );
+
+      console.log("RETRY CHAIN EXHAUSTED:", {
+        id: retry.id,
+        phone,
+        retry_type: retryType,
+        retry_count: retry.retry_count
+      });
+
+      return res.status(200).json({
+        success: true,
+        retry_scheduled: false,
+        retry_chain_exhausted: true
+      });
+    }
+
+
+    // =========================================================
+    // Schedule the next retry
+    // =========================================================
+
+    let nextDelayMs;
+
+    if (retryType === "voicemail") {
+
+      nextDelayMs =
+        getVoicemailRetryDelayMs(retry.retry_count);
+
+    } else {
+
+      // Standard retry behaviour:
+      // Retry #2 happens 24 hours after Retry #1.
+      nextDelayMs =
+        24 * 60 * 60 * 1000;
+    }
+
+
+    if (!nextDelayMs) {
+
+      await pool.query(
+        `
+        UPDATE call_retries
+        SET status = 'exhausted',
+            last_outcome = $1,
+            next_retry_time = NULL,
+            updated_at = NOW()
+        WHERE id = $2
+        `,
+        [
+          retryType === "voicemail"
+            ? "voicemail_retry_exhausted"
+            : "retry_exhausted",
           retry.id
         ]
       );
 
       console.log(
-        `SECOND AUTO RETRY QUEUED: ${phone} at ${nextRetryTime.toISOString()}`
+        `RETRY CHAIN EXHAUSTED: ${retry.id}`
       );
 
       return res.status(200).json({
         success: true,
-        retry_scheduled: true,
-        retry_number: 2,
-        next_retry_time: nextRetryTime.toISOString()
+        retry_scheduled: false,
+        retry_chain_exhausted: true
       });
+    }
+
+
+    const nextRetryTime =
+      new Date(Date.now() + nextDelayMs);
+
+    await pool.query(
+      `
+      UPDATE call_retries
+      SET status = 'pending',
+          next_retry_time = $1,
+          last_outcome = $2,
+          updated_at = NOW()
+      WHERE id = $3
+      `,
+      [
+        nextRetryTime,
+        inVoicemail
+          ? "voicemail"
+          : (
+              prospectOutcome ||
+              disconnectReason ||
+              "retry_needed"
+            ),
+        retry.id
+      ]
+    );
+
+    console.log("NEXT AUTO RETRY QUEUED:", {
+      id: retry.id,
+      phone,
+      retry_type: retryType,
+      retry_number: retry.retry_count + 1,
+      next_retry_time: nextRetryTime.toISOString()
+    });
+
+    return res.status(200).json({
+      success: true,
+      retry_scheduled: true,
+      retry_number: retry.retry_count + 1,
+      retry_type: retryType,
+      next_retry_time: nextRetryTime.toISOString()
+    });
     }
 
 
@@ -821,10 +913,18 @@ app.post("/retell-webhook", async (req, res) => {
       });
     }
 
+    const retryType = inVoicemail ? "voicemail" : "standard";
 
-    // First automatic retry: 2 hours later.
+    let firstRetryDelayMs;
+
+    if (retryType === "voicemail") {
+      firstRetryDelayMs = getVoicemailRetryDelayMs(0);
+    } else {
+      firstRetryDelayMs = 2 * 60 * 60 * 1000;
+    }
+
     const nextRetryTime =
-      new Date(Date.now() + 2 * 60 * 60 * 1000);
+      new Date(Date.now() + firstRetryDelayMs);
 
     await pool.query(
       `
@@ -836,9 +936,10 @@ app.post("/retell-webhook", async (req, res) => {
           retry_count,
           next_retry_time,
           status,
-          last_outcome
+          last_outcome,
+          retry_type
         )
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       `,
       [
         callId,
@@ -847,9 +948,14 @@ app.post("/retell-webhook", async (req, res) => {
         0,
         nextRetryTime,
         "pending",
-        prospectOutcome ||
-          disconnectReason ||
-          "unknown"
+        inVoicemail
+          ? "voicemail"
+          : (
+              prospectOutcome ||
+              disconnectReason ||
+              "unknown"
+            ),
+        retryType
       ]
     );
 
@@ -943,7 +1049,11 @@ async function processDueRetries() {
       FROM call_retries
       WHERE status = 'pending'
         AND next_retry_time <= NOW()
-        AND retry_count < 2
+        AND (
+          (retry_type = 'voicemail' AND retry_count < 5)
+          OR
+          (COALESCE(retry_type, 'standard') = 'standard' AND retry_count < 2)
+        )
       ORDER BY next_retry_time ASC
       LIMIT 10
     `);
@@ -1078,6 +1188,11 @@ async function initDatabase() {
   await pool.query(`
     ALTER TABLE call_retries
     ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ
+  `);
+
+  await pool.query(`
+    ALTER TABLE call_retries
+    ADD COLUMN IF NOT EXISTS retry_type TEXT DEFAULT 'standard'
   `);
 
   await pool.query(`
