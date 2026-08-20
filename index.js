@@ -449,7 +449,7 @@ async function makeRetellCallback({ phone, name }) {
   return data;
 }
 
-async function makeRetellRetry({ phone, name }) {
+async function makeRetellRetry({ phone, name, retryType }) {
 
   if (await isDnd(phone)) {
     console.log("RETRY BLOCKED BY DND:", phone);
@@ -473,8 +473,12 @@ async function makeRetellRetry({ phone, name }) {
         to_number: phone,
         retell_llm_dynamic_variables: {
           prospect_name: name || "",
+          callback_phone: phone,
+          retry_type: retryType || "standard",
           retry_context:
-            "This is an automatic follow-up attempt because the previous outbound call did not connect with the prospect."
+            retryType === "demo_recovery"
+              ? "The prospect already agreed to a demo, but the previous call disconnected before the booking was completed. Resume the demo booking immediately."
+              : "This is an automatic follow-up attempt because the previous outbound call did not connect with the prospect."
         }
       })
     }
@@ -764,21 +768,93 @@ app.post("/retell-webhook", async (req, res) => {
 
     const prospectOutcome = customAnalysis?.prospect_outcome;
 
+    // Post-call DND fallback
+    const dndRequested =
+      customAnalysis?.dnd_requested === true ||
+      customAnalysis?.dnd_requested === "true" ||
+      prospectOutcome === "do_not_call" ||
+      prospectOutcome === "dnd";
+
+    if (dndRequested && phone) {
+      const normalizedDndPhone = normalizePhone(phone);
+
+      if (normalizedDndPhone) {
+        await pool.query(
+          `
+          INSERT INTO dnd_numbers (phone, reason)
+          VALUES ($1, $2)
+          ON CONFLICT (phone) DO NOTHING
+          `,
+          [
+            normalizedDndPhone,
+            "Post-call analysis detected explicit DND request"
+          ]
+        );
+
+
+        await pool.query(
+          `
+          UPDATE callbacks
+          SET status = 'cancelled'
+          WHERE phone = $1
+            AND status = 'pending'
+          `,
+          [normalizedDndPhone]
+        );
+
+        await pool.query(
+          `
+          UPDATE call_retries
+          SET status = 'cancelled',
+              next_retry_time = NULL,
+              updated_at = NOW()
+          WHERE phone = $1
+            AND status IN (
+              'pending',
+              'processing',
+              'waiting_result',
+              'paused'
+            )
+          `,
+          [normalizedDndPhone]
+        );
+
+
+        console.log("POST-CALL DND ADDED:", normalizedDndPhone);
+
+        return res.status(200).json({
+          success: true,
+          dnd_added: true,
+          retry_scheduled: false
+        });
+      }
+    }
+
+
     // Retell voicemail detection
     const inVoicemail = analysis?.in_voicemail === true;
 
     const automaticRetryAllowed =
       customAnalysis?.automatic_retry_allowed === true;
 
+    const demoIntentIncomplete =
+      customAnalysis?.demo_intent_incomplete === true ||
+      customAnalysis?.demo_intent_incomplete === "true";
+
     const name =
       call?.retell_llm_dynamic_variables?.prospect_name || null;
 
-    if (!callId || !phone) {
-      console.log("RETRY SKIPPED: Missing call ID or phone number");
+    
+    if (!callId || !phone || !isValidResolvedPhone(phone)) {
+      console.log("RETRY SKIPPED: Missing/invalid call ID or phone", {
+        callId,
+        phone
+      });
 
       return res.status(200).json({
         success: true,
-        retry_scheduled: false
+        retry_scheduled: false,
+        invalid_phone: true
       });
     }
 
@@ -797,10 +873,23 @@ app.post("/retell-webhook", async (req, res) => {
       automaticRetryAllowed === true &&
       prospectOutcome === "no_meaningful_conversation";
 
+    const meaningfulConversation =
+      prospectOutcome &&
+      prospectOutcome !== "no_meaningful_conversation";
+
     const shouldRetry =
-      retryBecauseOfDisconnect ||
-      retryBecauseOfAnalysis ||
-      inVoicemail;
+      !dndRequested &&
+      (
+        demoIntentIncomplete ||
+        inVoicemail ||
+        (
+          !meaningfulConversation &&
+          (
+            retryBecauseOfDisconnect ||
+            retryBecauseOfAnalysis
+          )
+        )
+      );
 
     // =========================================================
     // STEP A — Is this call already part of an existing retry?
@@ -868,7 +957,9 @@ app.post("/retell-webhook", async (req, res) => {
     const retryType = retry.retry_type || "standard";
 
     const maxRetries =
-      retryType === "voicemail" ? 2 : 2;
+      retryType === "demo_recovery"
+        ? 1
+        : 2;
 
 
     // Maximum attempts for this retry chain have been reached.
@@ -916,15 +1007,18 @@ app.post("/retell-webhook", async (req, res) => {
 
     let nextDelayMs;
 
-    if (retryType === "voicemail") {
+    if (retryType === "demo_recovery") {
+
+      // Only one recovery attempt is allowed.
+      nextDelayMs = null;
+
+    } else if (retryType === "voicemail") {
 
       nextDelayMs =
         getVoicemailRetryDelayMs(retry.retry_count);
 
     } else {
 
-      // Standard retry behaviour:
-      // Retry #2 happens 24 hours after Retry #1.
       nextDelayMs =
         24 * 60 * 60 * 1000;
     }
@@ -942,9 +1036,11 @@ app.post("/retell-webhook", async (req, res) => {
         WHERE id = $2
         `,
         [
-          retryType === "voicemail"
-            ? "voicemail_retry_exhausted"
-            : "retry_exhausted",
+          retryType === "demo_recovery"
+            ? "demo_recovery_completed"
+            : retryType === "voicemail"
+              ? "voicemail_retry_exhausted"
+              : "retry_exhausted",
           retry.id
         ]
       );
@@ -1046,6 +1142,33 @@ app.post("/retell-webhook", async (req, res) => {
       });
     }
 
+
+    // =========================================================
+    // Never create retries for numbers already on DND
+    // =========================================================
+
+    const normalizedOriginalPhone = normalizePhone(phone);
+
+    const existingDnd = await pool.query(
+      `
+      SELECT id
+      FROM dnd_numbers
+      WHERE phone = $1
+      LIMIT 1
+      `,
+      [normalizedOriginalPhone]
+    );
+
+    if (existingDnd.rows.length > 0) {
+      console.log("RETRY BLOCKED - PHONE IS DND:", normalizedOriginalPhone);
+
+      return res.status(200).json({
+        success: true,
+        retry_scheduled: false,
+        blocked_by_dnd: true
+      });
+    }
+
     // =========================================================
     // Prevent multiple active retry chains for the same phone
     // =========================================================
@@ -1085,11 +1208,21 @@ app.post("/retell-webhook", async (req, res) => {
       });
     }
 
-    const retryType = inVoicemail ? "voicemail" : "standard";
+    let retryType;
+
+    if (demoIntentIncomplete) {
+      retryType = "demo_recovery";
+    } else if (inVoicemail) {
+      retryType = "voicemail";
+    } else {
+      retryType = "standard";
+    }
 
     let firstRetryDelayMs;
 
-    if (retryType === "voicemail") {
+    if (retryType === "demo_recovery") {
+      firstRetryDelayMs = 1 * 60 * 1000; // 1 minute
+    } else if (retryType === "voicemail") {
       firstRetryDelayMs = getVoicemailRetryDelayMs(0);
     } else {
       firstRetryDelayMs = 2 * 60 * 60 * 1000;
@@ -1120,13 +1253,15 @@ app.post("/retell-webhook", async (req, res) => {
         0,
         nextRetryTime,
         "pending",
-        inVoicemail
-          ? "voicemail"
-          : (
-              prospectOutcome ||
-              disconnectReason ||
-              "unknown"
-            ),
+        retryType === "demo_recovery"
+          ? "demo_booking_incomplete"
+          : inVoicemail
+            ? "voicemail"
+            : (
+                prospectOutcome ||
+                disconnectReason ||
+                "unknown"
+              ),
         retryType
       ]
     );
@@ -1206,6 +1341,19 @@ async function processDueCallbacks() {
           `Callback failed for ID ${callback.id}:`,
           err.message
         );
+
+        await pool.query(
+          `
+          UPDATE callbacks
+          SET status = 'failed'
+          WHERE id = $1
+          `,
+          [callback.id]
+        );
+
+        console.log(
+          `CALLBACK MARKED FAILED - MANUAL REVIEW REQUIRED: ${callback.id}`
+        );
       }
     }
 
@@ -1222,6 +1370,8 @@ async function processDueRetries() {
       WHERE status = 'pending'
         AND next_retry_time <= NOW()
         AND (
+          (retry_type = 'demo_recovery' AND retry_count < 1)
+          OR
           (retry_type = 'voicemail' AND retry_count < 2)
           OR
           (COALESCE(retry_type, 'standard') = 'standard' AND retry_count < 2)
@@ -1257,7 +1407,8 @@ async function processDueRetries() {
 
         const retellResult = await makeRetellRetry({
           phone: retry.phone,
-          name: retry.name
+          name: retry.name,
+          retryType: retry.retry_type
         });
 
         if (retellResult.blocked) {
@@ -1311,6 +1462,7 @@ async function processDueRetries() {
           `
           UPDATE call_retries
           SET status = 'pending',
+              next_retry_time = NOW() + INTERVAL '30 minutes',
               updated_at = NOW()
           WHERE id = $1
           `,
