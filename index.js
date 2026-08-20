@@ -1376,7 +1376,14 @@ async function processDueRetries() {
           OR
           (COALESCE(retry_type, 'standard') = 'standard' AND retry_count < 2)
         )
-      ORDER BY next_retry_time ASC
+      ORDER BY
+        CASE
+          WHEN retry_type = 'demo_recovery' THEN 0
+          WHEN COALESCE(retry_type, 'standard') = 'standard' THEN 1
+          WHEN retry_type = 'voicemail' THEN 2
+          ELSE 3
+        END,
+        next_retry_time ASC
       LIMIT 10
     `);
 
