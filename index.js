@@ -10,6 +10,43 @@ const { Client } = require("@microsoft/microsoft-graph-client");
 const app = express();
 app.use(express.json());
 
+function isValidResolvedPhone(phone) {
+  if (!phone || typeof phone !== "string") {
+    return false;
+  }
+
+  const trimmed = phone.trim();
+
+  // Reject unresolved Retell/template variables
+  if (
+    trimmed.includes("{{") ||
+    trimmed.includes("}}")
+  ) {
+    return false;
+  }
+
+  // Normalize common formatting
+  const normalized =
+    "+" + trimmed.replace(/[^\d]/g, "");
+
+  // Basic E.164 validation
+  return /^\+[1-9]\d{7,14}$/.test(normalized);
+}
+
+function normalizePhone(phone) {
+  if (!phone || typeof phone !== "string") {
+    return null;
+  }
+
+  const digits = phone.replace(/[^\d]/g, "");
+
+  if (!digits) {
+    return null;
+  }
+
+  return "+" + digits;
+}
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
@@ -487,6 +524,72 @@ app.post("/schedule-callback", async (req, res) => {
       time_zone
     } = req.body;
 
+    // =========================================================
+    // Validate required callback fields
+    // =========================================================
+
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        error: "Phone number is required"
+      });
+    }
+
+    if (!isValidResolvedPhone(phone)) {
+      console.error("CALLBACK REJECTED - INVALID PHONE:", {
+        received_phone: phone,
+        name,
+        callback_time,
+        time_zone
+      });
+
+      return res.status(400).json({
+        success: false,
+        error:
+          "Callback phone number is invalid or contains an unresolved template variable"
+      });
+    }
+
+    if (!callback_time) {
+      return res.status(400).json({
+        success: false,
+        error: "Callback time is required"
+      });
+    }
+
+    const normalizedPhone = normalizePhone(phone);
+
+    // =========================================================
+    // DND check before creating callback
+    // =========================================================
+
+    const dndCheck = await pool.query(
+      `
+      SELECT id
+      FROM dnd_numbers
+      WHERE phone = $1
+      LIMIT 1
+      `,
+      [normalizedPhone]
+    );
+
+    if (dndCheck.rows.length > 0) {
+      console.log(
+        `CALLBACK BLOCKED BY DND: ${normalizedPhone}`
+      );
+
+      return res.status(200).json({
+        success: false,
+        blocked: true,
+        reason: "dnd",
+        phone: normalizedPhone
+      });
+    }
+
+    // =========================================================
+    // Store callback
+    // =========================================================
+
     const result = await pool.query(
       `
       INSERT INTO callbacks
@@ -496,14 +599,22 @@ app.post("/schedule-callback", async (req, res) => {
       RETURNING *
       `,
       [
-        name,
-        phone,
+        name || null,
+        normalizedPhone,
         callback_time,
-        time_zone
+        time_zone || "UTC"
       ]
     );
 
-    res.json({
+    console.log("CALLBACK SCHEDULED:", {
+      id: result.rows[0].id,
+      name,
+      phone: normalizedPhone,
+      callback_time,
+      time_zone
+    });
+
+    return res.json({
       success: true,
       message: "Callback scheduled",
       callback: result.rows[0]
@@ -512,7 +623,7 @@ app.post("/schedule-callback", async (req, res) => {
   } catch (err) {
     console.error("Callback scheduling error:", err);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       error: err.message
     });
@@ -530,6 +641,21 @@ app.post("/add-dnd", async (req, res) => {
       });
     }
 
+    if (!isValidResolvedPhone(phone)) {
+      console.error("DND REJECTED - INVALID PHONE:", {
+        received_phone: phone,
+        reason
+      });
+
+      return res.status(400).json({
+        success: false,
+        error:
+          "DND phone number is invalid or contains an unresolved template variable"
+      });
+    }
+
+    const normalizedPhone = normalizePhone(phone);
+
     await pool.query(
       `
       INSERT INTO dnd_numbers (phone, reason)
@@ -538,11 +664,12 @@ app.post("/add-dnd", async (req, res) => {
       DO UPDATE SET reason = EXCLUDED.reason
       `,
       [
-        phone,
+        normalizedPhone,
         reason || "Prospect requested do not call"
       ]
     );
 
+    // Cancel pending callbacks
     await pool.query(
       `
       UPDATE callbacks
@@ -550,26 +677,33 @@ app.post("/add-dnd", async (req, res) => {
       WHERE phone = $1
         AND status = 'pending'
       `,
-      [phone]
+      [normalizedPhone]
     );
 
+    // Cancel pending retries
     await pool.query(
       `
       UPDATE call_retries
       SET status = 'cancelled',
           updated_at = NOW()
       WHERE phone = $1
-        AND status IN ('pending', 'processing', 'waiting_result')
+        AND status IN (
+          'pending',
+          'processing',
+          'waiting_result',
+          'paused'
+        )
       `,
-      [phone]
+      [normalizedPhone]
     );
 
-    console.log("DND ADDED:", phone);
+    console.log("DND ADDED:", normalizedPhone);
 
     return res.json({
       success: true,
-      message: "Phone number added to DND and pending calls cancelled",
-      phone
+      message:
+        "Phone number added to DND and pending calls cancelled",
+      phone: normalizedPhone
     });
 
   } catch (err) {
@@ -583,14 +717,13 @@ app.post("/add-dnd", async (req, res) => {
 });
 
 function getVoicemailRetryDelayMs(retryCount) {
-  // retryCount = number of retries already PLACED
+  // Maximum 2 voicemail retries.
+  // Retry #1: 24 hours later
+  // Retry #2: 72 hours after Retry #1
 
   const schedule = {
-    0: 1 * 60 * 60 * 1000,       // Retry #1: +1 hour
-    1: 2 * 60 * 60 * 1000,       // Retry #2: +2 hours
-    2: 24 * 60 * 60 * 1000,      // Retry #3: +1 day
-    3: 2 * 60 * 60 * 1000,       // Retry #4: +2 hours
-    4: 24 * 60 * 60 * 1000       // Retry #5: +1 day
+    0: 24 * 60 * 60 * 1000,
+    1: 72 * 60 * 60 * 1000
   };
 
   return schedule[retryCount] ?? null;
@@ -735,7 +868,7 @@ app.post("/retell-webhook", async (req, res) => {
     const retryType = retry.retry_type || "standard";
 
     const maxRetries =
-      retryType === "voicemail" ? 5 : 2;
+      retryType === "voicemail" ? 2 : 2;
 
 
     // Maximum attempts for this retry chain have been reached.
@@ -913,6 +1046,45 @@ app.post("/retell-webhook", async (req, res) => {
       });
     }
 
+    // =========================================================
+    // Prevent multiple active retry chains for the same phone
+    // =========================================================
+
+    const normalizedRetryPhone = normalizePhone(phone);
+
+    const existingPhoneRetry = await pool.query(
+      `
+      SELECT id, status, retry_type, retry_count, next_retry_time
+      FROM call_retries
+      WHERE phone = $1
+        AND status IN (
+          'pending',
+          'processing',
+          'waiting_result',
+          'paused'
+        )
+      ORDER BY created_at DESC
+      LIMIT 1
+      `,
+      [normalizedRetryPhone]
+    );
+
+    if (existingPhoneRetry.rows.length > 0) {
+
+      console.log("RETRY SKIPPED - ACTIVE PHONE CHAIN EXISTS:", {
+        phone: normalizedRetryPhone,
+        existing_retry_id: existingPhoneRetry.rows[0].id,
+        status: existingPhoneRetry.rows[0].status
+      });
+
+      return res.status(200).json({
+        success: true,
+        retry_scheduled: false,
+        duplicate_phone_retry: true,
+        existing_retry_id: existingPhoneRetry.rows[0].id
+      });
+    }
+
     const retryType = inVoicemail ? "voicemail" : "standard";
 
     let firstRetryDelayMs;
@@ -943,7 +1115,7 @@ app.post("/retell-webhook", async (req, res) => {
       `,
       [
         callId,
-        phone,
+        normalizedRetryPhone,
         name,
         0,
         nextRetryTime,
@@ -1050,7 +1222,7 @@ async function processDueRetries() {
       WHERE status = 'pending'
         AND next_retry_time <= NOW()
         AND (
-          (retry_type = 'voicemail' AND retry_count < 5)
+          (retry_type = 'voicemail' AND retry_count < 2)
           OR
           (COALESCE(retry_type, 'standard') = 'standard' AND retry_count < 2)
         )
