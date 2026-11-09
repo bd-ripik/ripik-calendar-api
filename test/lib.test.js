@@ -1,0 +1,123 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+
+const { normalizePhone } = require("../lib/phone");
+const { verifyRetellSignature, signForTest } = require("../lib/retellSignature");
+const { inWindow, nextInWindow, retryWindowFromEnv, callbackWindowFor } = require("../lib/callingWindow");
+const { resolveTimeZone } = require("../lib/timezones");
+const { pickFreeSlots, isPlausibleEmail } = require("../lib/booking");
+
+test("normalizePhone keeps E.164 and fixes US formats", () => {
+  assert.equal(normalizePhone("+1 (312) 899-3097"), "+13128993097");
+  assert.equal(normalizePhone("3128993097"), "+13128993097");
+  assert.equal(normalizePhone("13128993097"), "+13128993097");
+  assert.equal(normalizePhone("+919873370176"), "+919873370176");
+});
+
+test("normalizePhone rejects junk instead of guessing", () => {
+  assert.equal(normalizePhone("{{callback_phone}}"), null);
+  assert.equal(normalizePhone("12345"), null);
+  assert.equal(normalizePhone(""), null);
+  assert.equal(normalizePhone(null), null);
+  // Old code turned this into "+4155551234" (a non-US number).
+  assert.notEqual(normalizePhone("415-555-1234"), "+4155551234");
+});
+
+test("Retell signature verifies and rejects tampering", () => {
+  const key = "key_test_123";
+  const body = JSON.stringify({ event: "call_analyzed", call: { call_id: "c1" } });
+  const now = Date.now();
+  const header = signForTest(body, key, now);
+
+  assert.equal(verifyRetellSignature(body, key, header, { now }), true);
+  assert.equal(verifyRetellSignature(body + " ", key, header, { now }), false);
+  assert.equal(verifyRetellSignature(body, "wrong_key", header, { now }), false);
+  assert.equal(verifyRetellSignature(body, key, undefined, { now }), false);
+  assert.equal(verifyRetellSignature(body, key, "garbage", { now }), false);
+  // Old signatures (replay) are rejected.
+  assert.equal(verifyRetellSignature(body, key, header, { now: now + 10 * 60 * 1000 }), false);
+  // GET requests sign the empty string.
+  assert.equal(verifyRetellSignature("", key, signForTest("", key, now), { now }), true);
+});
+
+test("retry window: weekdays 11:00-17:00 Eastern by default", () => {
+  const w = retryWindowFromEnv({});
+  // Wed 2026-11-11 15:00 UTC = 10:00 ET -> closed; 16:00 UTC = 11:00 ET -> open
+  assert.equal(inWindow(new Date("2026-11-11T15:00:00Z"), w), false);
+  assert.equal(inWindow(new Date("2026-11-11T16:00:00Z"), w), true);
+  // 22:00 UTC = 17:00 ET -> closed
+  assert.equal(inWindow(new Date("2026-11-11T22:00:00Z"), w), false);
+  // Saturday midday -> closed
+  assert.equal(inWindow(new Date("2026-11-14T17:00:00Z"), w), false);
+});
+
+test("retry window: a Friday-evening retry moves to Monday 11:00 ET", () => {
+  const w = retryWindowFromEnv({});
+  const fridayEvening = new Date("2026-11-13T23:30:00Z"); // 18:30 ET Friday
+  const next = nextInWindow(fridayEvening, w);
+  assert.equal(next.toISOString(), "2026-11-16T16:00:00.000Z"); // Mon 11:00 ET
+});
+
+test("callback window uses the prospect's zone, 08:00-21:00", () => {
+  const pacific = callbackWindowFor("America/Los_Angeles");
+  // 15:30 UTC = 07:30 PT -> too early; 16:00 UTC = 08:00 PT -> fine
+  assert.equal(inWindow(new Date("2026-11-11T15:30:00Z"), pacific), false);
+  assert.equal(inWindow(new Date("2026-11-11T16:00:00Z"), pacific), true);
+  // Saturday is allowed for a requested callback
+  assert.equal(inWindow(new Date("2026-11-14T18:00:00Z"), pacific), true);
+  // Unknown zone falls back to 11:00-21:00 Eastern
+  const unknown = callbackWindowFor("UTC");
+  assert.equal(unknown.timeZone, "America/New_York");
+});
+
+test("time zone resolution", () => {
+  assert.equal(resolveTimeZone({ state: "Ohio" }).time_zone, "America/New_York");
+  assert.equal(resolveTimeZone({ state: "OH", country: "USA" }).time_zone, "America/New_York");
+  assert.equal(resolveTimeZone({ state: "Texas", city: "El Paso" }).time_zone, "America/Denver");
+  assert.equal(resolveTimeZone({ country: "India" }).time_zone, "Asia/Kolkata");
+  // Indiana is split: Gary is Central, Fort Wayne is Eastern, unknown -> ask.
+  assert.equal(resolveTimeZone({ state: "Indiana", city: "Gary" }).time_zone, "America/Chicago");
+  assert.equal(resolveTimeZone({ state: "IN", city: "Fort Wayne" }).time_zone, "America/New_York");
+  assert.equal(resolveTimeZone({ state: "Indiana" }).success, false);
+  assert.equal(resolveTimeZone({ country: "Canada" }).success, false);
+  assert.equal(resolveTimeZone({}).success, false);
+});
+
+test("pickFreeSlots offers weekday slots inside demo hours", () => {
+  // Window starts Fri 2026-11-13 09:00 ET (14:00 UTC), 30-min intervals.
+  // Slot 0 busy, slot 1 free (09:30 ET), then free until evening, then the
+  // weekend, so only Friday slots should be offered.
+  const view = "2" + "0".repeat(60);
+  const slots = pickFreeSlots({
+    availabilityView: view,
+    windowStart: new Date("2026-11-13T14:00:00Z"),
+    intervalMinutes: 30,
+    timeZone: "America/New_York",
+    earliest: new Date("2026-11-13T12:00:00Z"),
+    startHour: 9,
+    endHour: 17,
+    count: 3
+  });
+  assert.equal(slots.length, 3);
+  assert.equal(slots[0].start, "2026-11-13T14:30:00.000Z");
+  assert.match(slots[0].label, /Friday, Nov 13.*9:30/);
+
+  // A 16:45 start would end after 17:00, so the last offered slot is 16:30.
+  const late = pickFreeSlots({
+    availabilityView: "0".repeat(20),
+    windowStart: new Date("2026-11-13T21:00:00Z"), // 16:00 ET Friday
+    intervalMinutes: 30,
+    timeZone: "America/New_York",
+    earliest: new Date("2026-11-13T00:00:00Z"),
+    count: 5
+  });
+  assert.deepEqual(late.map(s => s.start), ["2026-11-13T21:00:00.000Z", "2026-11-13T21:30:00.000Z"]);
+});
+
+test("email sanity check", () => {
+  assert.equal(isPlausibleEmail("anshul_gupta@ripik.ai"), true);
+  assert.equal(isPlausibleEmail("anshul at ripik dot ai"), false);
+  assert.equal(isPlausibleEmail("x@y"), false);
+});
