@@ -19,11 +19,11 @@ Node/Express service on Railway that sits behind the Retell voice agent "Ava".
 | Retries stop after `MAX_CALLS_PER_NUMBER_7D` calls in 7 days, or after any real conversation in 30 days | `placeCall` |
 | Each queued call is claimed atomically (no double dialling) | workers (`FOR UPDATE SKIP LOCKED`) |
 | A demo is booked at most once per email and start time | `demo_bookings`, Graph `transactionId` |
-| Demo slots fit the prospect's hours, the US team's hours, and everyone's calendar | `suggestSlots`, `isSlotBusy` |
+| Demo slots fit the prospect's hours (9–7 local), the team's hours if set, and the checked calendars | `suggestSlots`, `isSlotBusy` |
 
 ## How demos are booked
 
-When the prospect agrees, the agent calls `Get_Demo_Slots` and then `Book_Demo_Meeting`. The backend creates a 30-minute Teams meeting in the calendar of the `USER_EMAIL` mailbox (bd@ripik.ai) through Microsoft Graph, using the Azure app "Ripik AI Telecalling Scheduler". The invite goes to the prospect from that mailbox. Everyone in `DEMO_ATTENDEES` is added to the invite, and their calendars are checked before a time is offered.
+When the prospect agrees, the agent calls `Get_Demo_Slots` and then `Book_Demo_Meeting`. The backend creates a 30-minute Teams meeting in the calendar of the `USER_EMAIL` mailbox (bd@ripik.ai) through Microsoft Graph, using the Azure app "Ripik AI Telecalling Scheduler". The invite goes to the prospect from that mailbox. Everyone in `DEMO_ATTENDEES` is added to the invite and their calendars are checked before a time is offered. Everyone in `DEMO_NOTIFY_EMAILS` is copied on the invite without a calendar check. Offered times are 9:00–19:00 in the prospect's time zone on weekdays (`DEMO_HOURS_START`/`DEMO_HOURS_END`).
 
 ## Tables
 

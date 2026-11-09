@@ -8,7 +8,12 @@ Paste `sarah-prompt.md` into the agent's prompt, replacing the old one.
 
 Also, in the agent settings:
 - set the agent name to Sarah;
-- pick a natural US English female voice that matches the name.
+- pick a natural US English female voice that matches the name:
+  1. open the agent;
+  2. click the voice selector (near the top of the agent page, next to the language and model, or under Global settings, then Voice & Language);
+  3. filter to English, female, American accent;
+  4. preview a few and pick one;
+  5. save and publish the agent.
 
 ## 2. Tools (custom functions)
 

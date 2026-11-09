@@ -34,16 +34,24 @@ const CONFIG = {
   maxCallsPerNumber7d: Number(process.env.MAX_CALLS_PER_NUMBER_7D || 3),
   // Demo slots offered when the requested time is busy (prospect local time).
   demoHoursStart: Number(process.env.DEMO_HOURS_START || 9),
-  demoHoursEnd: Number(process.env.DEMO_HOURS_END || 17),
+  demoHoursEnd: Number(process.env.DEMO_HOURS_END || 19),
   // Earliest a demo can be offered, in hours from now.
   demoMinNoticeHours: Number(process.env.DEMO_MIN_NOTICE_HOURS || 3),
-  // The US demo team's own working hours. Offered slots must fit both these
-  // and the prospect's demo hours above.
-  demoTeamWindow: {
-    timeZone: process.env.DEMO_TEAM_TZ || "America/Los_Angeles",
-    startHour: Number(process.env.DEMO_TEAM_START_HOUR || 8),
-    endHour: Number(process.env.DEMO_TEAM_END_HOUR || 17)
-  },
+  // Optional: the demo team's own working hours. Only applied when
+  // DEMO_TEAM_TZ is set; offered slots must then fit both windows.
+  demoTeamWindow: process.env.DEMO_TEAM_TZ
+    ? {
+        timeZone: process.env.DEMO_TEAM_TZ,
+        startHour: Number(process.env.DEMO_TEAM_START_HOUR || 8),
+        endHour: Number(process.env.DEMO_TEAM_END_HOUR || 17)
+      }
+    : null,
+  // People copied on every demo invite (for example to forward it on).
+  // Their calendars are NOT checked.
+  demoNotify: (process.env.DEMO_NOTIFY_EMAILS || "")
+    .split(",")
+    .map(s => s.trim().toLowerCase())
+    .filter(Boolean),
   // Internal people added to every demo invite. Their calendars are also
   // checked: a slot is offered only if the BD mailbox and all of them are free.
   demoAttendees: (process.env.DEMO_ATTENDEES || "")
@@ -202,7 +210,8 @@ async function isSlotBusy(startDT, timeZone) {
   const info = await getAvailability(startDT, startDT.plus({ minutes: 30 }), timeZone);
   const items = info.scheduleItems.filter(item => item.status !== "free");
   if (items.length > 0) return true;
-  // Outside the US team's working hours counts as busy.
+  if (!CONFIG.demoTeamWindow) return false;
+  // Outside the demo team's working hours counts as busy.
   const start = startDT.toJSDate();
   const lastMinute = startDT.plus({ minutes: 29 }).toJSDate();
   const team = { ...CONFIG.demoTeamWindow, weekdaysOnly: true };
@@ -362,7 +371,10 @@ app.post("/book-demo", requireRetell, async (req, res) => {
         { emailAddress: { address: email, name: name || email }, type: "required" },
         ...CONFIG.demoAttendees
           .filter(a => a !== email && a !== BD_MAILBOX.toLowerCase())
-          .map(address => ({ emailAddress: { address }, type: "required" }))
+          .map(address => ({ emailAddress: { address }, type: "required" })),
+        ...CONFIG.demoNotify
+          .filter(a => a !== email && a !== BD_MAILBOX.toLowerCase() && !CONFIG.demoAttendees.includes(a))
+          .map(address => ({ emailAddress: { address }, type: "optional" }))
       ]
     };
 
