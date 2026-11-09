@@ -41,7 +41,7 @@ Suggested descriptions, which the agent reads to decide when to use each tool:
 
 Set each of these to an empty string, so that a missing value never appears to Sarah as raw `{{...}}` text:
 
-`prospect_name`, `company`, `industry`, `email`, `city`, `state`, `country`, `callback_context`, `retry_type`, `retry_context`
+`prospect_name`, `title`, `company`, `industry`, `email`, `city`, `state`, `country`, `callback_context`, `retry_type`, `retry_context`
 
 `{{user_number}}` and `{{current_time_America/New_York}}` are filled in by Retell automatically.
 
@@ -81,7 +81,7 @@ These are as configured in August and don't need changing:
 The columns below become the dynamic variables of the same name. Send each lead file for cleaning before upload: duplicates, shared switchboard numbers, DND numbers and people already spoken to are removed.
 
 ```
-phone_number,prospect_name,company,industry,email,city,state,country
+phone_number,prospect_name,title,company,industry,email,city,state,country
 ```
 
 ## 7. Inbound calls
