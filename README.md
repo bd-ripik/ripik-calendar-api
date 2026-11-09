@@ -2,7 +2,7 @@
 
 Node/Express service on Railway that sits behind the Retell voice agent "Ava".
 
-- **Tools Ava calls during a call:** `POST /book-demo`, `POST /schedule-callback`, `POST /add-dnd`, `GET|POST /current-time`, `POST /resolve-timezone`, `POST /check-availability`
+- **Tools Ava calls during a call:** `POST /demo-slots`, `POST /book-demo`, `POST /schedule-callback`, `POST /add-dnd`, `GET|POST /current-time`, `POST /resolve-timezone`, `POST /check-availability`
 - **Retell webhook:** `POST /retell-webhook`. It records every call in `call_log` and decides on automatic retries after `call_analyzed`.
 - **Workers:** every 10 s for requested callbacks and every 60 s for automatic retries and demo recovery. They only dial when `DIALING_ENABLED=true`.
 - **Health:** `GET /health`

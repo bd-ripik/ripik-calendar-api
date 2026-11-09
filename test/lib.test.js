@@ -116,6 +116,23 @@ test("pickFreeSlots offers weekday slots inside demo hours", () => {
   assert.deepEqual(late.map(s => s.start), ["2026-11-13T21:00:00.000Z", "2026-11-13T21:30:00.000Z"]);
 });
 
+test("pickFreeSlots can offer one slot per day", () => {
+  // Thu 2026-11-12 00:00 ET (05:00 UTC), 4 days of 30-min intervals, all free.
+  const slots = pickFreeSlots({
+    availabilityView: "0".repeat(4 * 48),
+    windowStart: new Date("2026-11-12T05:00:00Z"),
+    intervalMinutes: 30,
+    timeZone: "America/New_York",
+    earliest: new Date("2026-11-12T05:00:00Z"),
+    startHour: 9,
+    endHour: 17,
+    count: 3,
+    distinctDays: true
+  });
+  // Thu 09:00, Fri 09:00, then skip the weekend -> Mon is beyond 4 days, so 2.
+  assert.deepEqual(slots.map(s => s.start), ["2026-11-12T14:00:00.000Z", "2026-11-13T14:00:00.000Z"]);
+});
+
 test("email sanity check", () => {
   assert.equal(isPlausibleEmail("anshul_gupta@ripik.ai"), true);
   assert.equal(isPlausibleEmail("anshul at ripik dot ai"), false);

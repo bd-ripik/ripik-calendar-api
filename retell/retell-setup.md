@@ -1,0 +1,80 @@
+# Retell setup for the new Ava prompt
+
+Replace `<RAILWAY_URL>` with the service's public URL, for example `https://ripik-calendar-api-production.up.railway.app`.
+
+## 1. Prompt
+
+Paste `ava-prompt.md` into the agent's prompt, replacing the old one.
+
+## 2. Tools (custom functions)
+
+For every custom function:
+- **Turn "Payload: args only" OFF.** The backend then also receives the call itself. It uses the call to find the prospect's number when a phone argument is wrong, and to link bookings to calls. The backend accepts both formats, so this is safe to change.
+- Retell signs every tool request automatically. Nothing to configure.
+
+| Tool name | Method and URL | Parameters (all strings) |
+|---|---|---|
+| `Get_Demo_Slots` **(new)** | POST `<RAILWAY_URL>/demo-slots` | `timeZone` (required, IANA zone such as America/New_York), `date` (optional, YYYY-MM-DD preferred day) |
+| `Book_Demo_Meeting` | POST `<RAILWAY_URL>/book-demo` | `name`, `email`, `start` (ISO 8601), `timeZone` — all required |
+| `schedule_callback` | POST `<RAILWAY_URL>/schedule-callback` | `name`, `phone`, `callback_time` (ISO 8601), `time_zone` |
+| `add_to_dnd` | POST `<RAILWAY_URL>/add-dnd` | `phone`, `reason` |
+| `resolve_timezone` | POST `<RAILWAY_URL>/resolve-timezone` | `city`, `state`, `country` |
+| `Get_Current_Time` | POST `<RAILWAY_URL>/current-time` | `timeZone` (optional) |
+| `end_call` | built-in | — |
+
+Suggested descriptions, which the agent reads to decide when to use each tool:
+- **Get_Demo_Slots:** "Get the next free 30-minute demo times in the prospect's time zone. Call this before proposing times. Each slot has a label to say aloud and a start value to pass to Book_Demo_Meeting."
+- **Book_Demo_Meeting:** "Book the 30-minute Teams demo. Only after the email is confirmed and a time is agreed."
+- **schedule_callback:** "Schedule a call back at the time the prospect asked for. Phone is {{user_number}}."
+- **add_to_dnd:** "Permanently stop calling this number. Phone is {{user_number}}."
+
+## 3. Default dynamic variables (agent level)
+
+Set each of these to an empty string, so that a missing value never appears to Ava as raw `{{...}}` text:
+
+`prospect_name`, `company`, `email`, `city`, `state`, `country`, `callback_context`, `retry_type`, `retry_context`
+
+`{{user_number}}` and `{{current_time_America/New_York}}` are filled in by Retell automatically.
+
+## 4. Post-call analysis fields
+
+Keep the existing fields: `prospect_outcome`, `automatic_retry_allowed`, `demo_intent_incomplete`, `dnd_requested`.
+
+Update `prospect_outcome` so its options are:
+- `demo_booked`
+- `callback_requested`
+- `interested`
+- `not_interested`
+- `wrong_person`
+- `referral_given`
+- `info_requested`
+- `do_not_call`
+- `no_meaningful_conversation` (also use this for voicemail, IVR, a receptionist who didn't connect, and silence)
+
+Add these new text fields, filled in only when they apply:
+- `referral_name`, `referral_role`: who the prospect said to contact instead.
+- `info_requested_email`: the email given when the prospect wanted information but no demo.
+- `main_objection`: one of `busy`, `send_email`, `has_solution`, `no_budget`, `not_relevant`, `not_decision_maker`, `other`, `none`.
+
+The backend already reads `prospect_outcome`, `automatic_retry_allowed`, `demo_intent_incomplete` and `dnd_requested`. The new fields are for the team's follow-up and reporting.
+
+## 5. Agent settings to keep
+
+These are as configured in August and don't need changing:
+- User speaks first.
+- Hang up on voicemail.
+- End call after 15 seconds of silence, with one reminder.
+- Maximum call duration limit.
+- Webhook URL set to `<RAILWAY_URL>/retell-webhook`, with the call_started, call_ended and call_analyzed events.
+
+## 6. Batch CSV columns
+
+The columns below become the dynamic variables of the same name. Send each lead file for cleaning before upload: duplicates, shared switchboard numbers, DND numbers and people already spoken to are removed.
+
+```
+phone_number,prospect_name,company,email,city,state,country
+```
+
+## 7. Inbound calls
+
+Check what happens when someone calls back `+1 447 226 1059`. People often return a missed call. If no agent answers inbound calls on that number, assign one (the same Ava agent works), so those callers can book a demo too.

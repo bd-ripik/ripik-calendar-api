@@ -35,6 +35,8 @@ const CONFIG = {
   // Demo slots offered when the requested time is busy (prospect local time).
   demoHoursStart: Number(process.env.DEMO_HOURS_START || 9),
   demoHoursEnd: Number(process.env.DEMO_HOURS_END || 17),
+  // Earliest a demo can be offered, in hours from now.
+  demoMinNoticeHours: Number(process.env.DEMO_MIN_NOTICE_HOURS || 3),
   retryWindow: retryWindowFromEnv()
 };
 
@@ -177,12 +179,12 @@ async function isSlotBusy(startDT, timeZone) {
   return items.length > 0;
 }
 
-// Next free 30-minute slots on weekdays inside demo hours, starting from the
-// requested day and looking 5 days ahead.
-async function suggestSlots(startDT, timeZone) {
-  const earliest = DateTime.now().plus({ hours: 1 });
-  const windowStart = DateTime.max(startDT.startOf("day"), earliest.setZone(timeZone).startOf("hour"));
-  const windowEnd = windowStart.plus({ days: 5 });
+// Free 30-minute slots on weekdays inside demo hours, from `fromDT` and
+// looking `days` ahead. Never sooner than the minimum notice.
+async function suggestSlots(fromDT, timeZone, { distinctDays = false, count = 3, days = 5 } = {}) {
+  const earliest = DateTime.now().plus({ hours: CONFIG.demoMinNoticeHours });
+  const windowStart = DateTime.max(fromDT.setZone(timeZone).startOf("day"), earliest.setZone(timeZone).startOf("hour"));
+  const windowEnd = windowStart.plus({ days });
 
   const info = await getAvailability(windowStart, windowEnd, timeZone, 30);
 
@@ -194,9 +196,41 @@ async function suggestSlots(startDT, timeZone) {
     earliest: earliest.toJSDate(),
     startHour: CONFIG.demoHoursStart,
     endHour: CONFIG.demoHoursEnd,
-    count: 3
+    count,
+    distinctDays
   });
 }
+
+// Tool: Get_Demo_Slots. Gives Ava concrete free times to offer, one per day,
+// so the prospect only has to pick. Each slot's "start" can be passed straight
+// to Book_Demo_Meeting.
+app.post("/demo-slots", requireRetell, async (req, res) => {
+  try {
+    const args = toolArgs(req);
+    const timeZone = args.timeZone || args.time_zone;
+    if (!isValidTimeZone(timeZone)) {
+      return toolFailure(res, "The prospect's time zone is needed first. Resolve it or ask the prospect.");
+    }
+
+    // Optional preferred day (YYYY-MM-DD in the prospect's zone).
+    let fromDT = DateTime.now().setZone(timeZone);
+    if (args.date) {
+      const preferred = DateTime.fromISO(String(args.date), { zone: timeZone });
+      if (preferred.isValid && preferred > fromDT) fromDT = preferred;
+    }
+
+    const slots = await suggestSlots(fromDT, timeZone, { distinctDays: true, count: 3, days: 7 });
+    console.log("DEMO SLOTS OFFERED:", { timeZone, slots: slots.map(s => s.label) });
+
+    if (slots.length === 0) {
+      return toolFailure(res, "No free demo slots in the next week. Ask the prospect which day suits them.");
+    }
+    return res.json({ success: true, timeZone, slots });
+  } catch (err) {
+    console.error("Demo slots error:", err);
+    return res.status(500).json({ success: false, error: "Could not load available times." });
+  }
+});
 
 app.post("/book-demo", requireRetell, async (req, res) => {
   const args = toolArgs(req);
