@@ -17,7 +17,7 @@ const {
   callbackWindowFor
 } = require("./lib/callingWindow");
 const { resolveTimeZone } = require("./lib/timezones");
-const { pickFreeSlots, isPlausibleEmail } = require("./lib/booking");
+const { pickFreeSlots, combineAvailability, isPlausibleEmail } = require("./lib/booking");
 
 // =========================================================
 // Configuration
@@ -37,6 +37,19 @@ const CONFIG = {
   demoHoursEnd: Number(process.env.DEMO_HOURS_END || 17),
   // Earliest a demo can be offered, in hours from now.
   demoMinNoticeHours: Number(process.env.DEMO_MIN_NOTICE_HOURS || 3),
+  // The US demo team's own working hours. Offered slots must fit both these
+  // and the prospect's demo hours above.
+  demoTeamWindow: {
+    timeZone: process.env.DEMO_TEAM_TZ || "America/Los_Angeles",
+    startHour: Number(process.env.DEMO_TEAM_START_HOUR || 8),
+    endHour: Number(process.env.DEMO_TEAM_END_HOUR || 17)
+  },
+  // Internal people added to every demo invite. Their calendars are also
+  // checked: a slot is offered only if the BD mailbox and all of them are free.
+  demoAttendees: (process.env.DEMO_ATTENDEES || "")
+    .split(",")
+    .map(s => s.trim().toLowerCase())
+    .filter(Boolean),
   retryWindow: retryWindowFromEnv()
 };
 
@@ -161,22 +174,39 @@ app.post("/resolve-timezone", requireRetell, (req, res) => {
 // Demo booking (Microsoft Graph)
 // =========================================================
 
+// Free/busy for the BD mailbox plus every internal demo attendee.
 async function getAvailability(startDT, endDT, timeZone, intervalMinutes = 30) {
+  const schedules = [BD_MAILBOX, ...CONFIG.demoAttendees.filter(e => e !== BD_MAILBOX.toLowerCase())];
   const schedule = await graphClient
     .api(`/users/${BD_MAILBOX}/calendar/getSchedule`)
     .post({
-      schedules: [BD_MAILBOX],
+      schedules,
       startTime: { dateTime: startDT.setZone(timeZone).toFormat("yyyy-MM-dd'T'HH:mm:ss"), timeZone },
       endTime: { dateTime: endDT.setZone(timeZone).toFormat("yyyy-MM-dd'T'HH:mm:ss"), timeZone },
       availabilityViewInterval: intervalMinutes
     });
-  return schedule.value[0];
+
+  const value = schedule.value || [];
+  const failed = value.filter(v => v.error);
+  if (failed.length) {
+    // An unreadable calendar must not look "free".
+    throw new Error(`Could not read calendar(s): ${failed.map(v => v.scheduleId).join(", ")}`);
+  }
+  return {
+    availabilityView: combineAvailability(value.map(v => v.availabilityView)),
+    scheduleItems: value.flatMap(v => v.scheduleItems || [])
+  };
 }
 
 async function isSlotBusy(startDT, timeZone) {
   const info = await getAvailability(startDT, startDT.plus({ minutes: 30 }), timeZone);
-  const items = (info.scheduleItems || []).filter(item => item.status !== "free");
-  return items.length > 0;
+  const items = info.scheduleItems.filter(item => item.status !== "free");
+  if (items.length > 0) return true;
+  // Outside the US team's working hours counts as busy.
+  const start = startDT.toJSDate();
+  const lastMinute = startDT.plus({ minutes: 29 }).toJSDate();
+  const team = { ...CONFIG.demoTeamWindow, weekdaysOnly: true };
+  return !inWindow(start, team) || !inWindow(lastMinute, team);
 }
 
 // Free 30-minute slots on weekdays inside demo hours, from `fromDT` and
@@ -197,7 +227,8 @@ async function suggestSlots(fromDT, timeZone, { distinctDays = false, count = 3,
     startHour: CONFIG.demoHoursStart,
     endHour: CONFIG.demoHoursEnd,
     count,
-    distinctDays
+    distinctDays,
+    teamWindow: CONFIG.demoTeamWindow
   });
 }
 
@@ -327,7 +358,12 @@ app.post("/book-demo", requireRetell, async (req, res) => {
       onlineMeetingProvider: "teamsForBusiness",
       // Graph uses transactionId to avoid creating the same event twice.
       transactionId: `ripik-demo-${bookingId}`,
-      attendees: [{ emailAddress: { address: email, name: name || email }, type: "required" }]
+      attendees: [
+        { emailAddress: { address: email, name: name || email }, type: "required" },
+        ...CONFIG.demoAttendees
+          .filter(a => a !== email && a !== BD_MAILBOX.toLowerCase())
+          .map(address => ({ emailAddress: { address }, type: "required" }))
+      ]
     };
 
     const result = await graphClient

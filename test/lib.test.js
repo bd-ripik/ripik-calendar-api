@@ -7,7 +7,7 @@ const { normalizePhone } = require("../lib/phone");
 const { verifyRetellSignature, signForTest } = require("../lib/retellSignature");
 const { inWindow, nextInWindow, retryWindowFromEnv, callbackWindowFor } = require("../lib/callingWindow");
 const { resolveTimeZone } = require("../lib/timezones");
-const { pickFreeSlots, isPlausibleEmail } = require("../lib/booking");
+const { pickFreeSlots, combineAvailability, isPlausibleEmail } = require("../lib/booking");
 
 test("normalizePhone keeps E.164 and fixes US formats", () => {
   assert.equal(normalizePhone("+1 (312) 899-3097"), "+13128993097");
@@ -131,6 +131,30 @@ test("pickFreeSlots can offer one slot per day", () => {
   });
   // Thu 09:00, Fri 09:00, then skip the weekend -> Mon is beyond 4 days, so 2.
   assert.deepEqual(slots.map(s => s.start), ["2026-11-12T14:00:00.000Z", "2026-11-13T14:00:00.000Z"]);
+});
+
+test("combineAvailability is free only when everyone is free", () => {
+  assert.equal(combineAvailability(["0002", "0200"]), "0202");
+  assert.equal(combineAvailability(["000"]), "000");
+  assert.equal(combineAvailability([]), "");
+});
+
+test("demo slots respect the US team's hours", () => {
+  // Prospect in New York, team in Los Angeles (08:00-17:00 PT).
+  // Window starts Thu 2026-11-12 09:00 ET (14:00 UTC), all free.
+  const slots = pickFreeSlots({
+    availabilityView: "0".repeat(20),
+    windowStart: new Date("2026-11-12T14:00:00Z"),
+    intervalMinutes: 30,
+    timeZone: "America/New_York",
+    earliest: new Date("2026-11-12T00:00:00Z"),
+    startHour: 9,
+    endHour: 17,
+    count: 1,
+    teamWindow: { timeZone: "America/Los_Angeles", startHour: 8, endHour: 17 }
+  });
+  // 9:00-10:30 ET is before 8:00 PT, so the first slot is 11:00 ET (8:00 PT).
+  assert.equal(slots[0].start, "2026-11-12T16:00:00.000Z");
 });
 
 test("email sanity check", () => {

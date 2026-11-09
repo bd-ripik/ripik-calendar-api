@@ -1,10 +1,14 @@
-# Retell setup for the new Ava prompt
+# Retell setup for the new Sarah prompt
 
 Replace `<RAILWAY_URL>` with the service's public URL, for example `https://ripik-calendar-api-production.up.railway.app`.
 
 ## 1. Prompt
 
-Paste `ava-prompt.md` into the agent's prompt, replacing the old one.
+Paste `sarah-prompt.md` into the agent's prompt, replacing the old one.
+
+Also, in the agent settings:
+- set the agent name to Sarah;
+- pick a natural US English female voice that matches the name.
 
 ## 2. Tools (custom functions)
 
@@ -30,9 +34,9 @@ Suggested descriptions, which the agent reads to decide when to use each tool:
 
 ## 3. Default dynamic variables (agent level)
 
-Set each of these to an empty string, so that a missing value never appears to Ava as raw `{{...}}` text:
+Set each of these to an empty string, so that a missing value never appears to Sarah as raw `{{...}}` text:
 
-`prospect_name`, `company`, `email`, `city`, `state`, `country`, `callback_context`, `retry_type`, `retry_context`
+`prospect_name`, `company`, `industry`, `email`, `city`, `state`, `country`, `callback_context`, `retry_type`, `retry_context`
 
 `{{user_number}}` and `{{current_time_America/New_York}}` are filled in by Retell automatically.
 
@@ -72,9 +76,9 @@ These are as configured in August and don't need changing:
 The columns below become the dynamic variables of the same name. Send each lead file for cleaning before upload: duplicates, shared switchboard numbers, DND numbers and people already spoken to are removed.
 
 ```
-phone_number,prospect_name,company,email,city,state,country
+phone_number,prospect_name,company,industry,email,city,state,country
 ```
 
 ## 7. Inbound calls
 
-Check what happens when someone calls back `+1 447 226 1059`. People often return a missed call. If no agent answers inbound calls on that number, assign one (the same Ava agent works), so those callers can book a demo too.
+Check what happens when someone calls back `+1 447 226 1059`. People often return a missed call. If no agent answers inbound calls on that number, assign one (the same Sarah agent works), so those callers can book a demo too.
