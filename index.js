@@ -819,8 +819,13 @@ async function processDueCallbacks() {
     for (const callback of rows) {
       const window = callbackWindowFor(callback.time_zone);
       const now = new Date();
+      // "Call me in 10 minutes" was asked for live on the phone, so a
+      // short-notice callback (within 4 hours of the request) goes out on time.
+      const shortNotice =
+        callback.created_at &&
+        new Date(callback.callback_time) - new Date(callback.created_at) <= 4 * 60 * 60 * 1000;
 
-      if (!inWindow(now, window)) {
+      if (!shortNotice && !inWindow(now, window)) {
         const next = nextInWindow(now, window);
         await pool.query(
           `UPDATE callbacks SET status = $1, callback_time = COALESCE($2, callback_time), updated_at = NOW() WHERE id = $3`,
