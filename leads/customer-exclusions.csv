@@ -1,16 +1,17 @@
-company,domains,notes,confirmed
-Nucor,nucor.com,"Includes subsidiaries, e.g. Nucor-Yamato Steel, David J. Joseph Company, Harris Rebar",no
-U.S. Steel,ussteel.com,"Includes Big River Steel. Owned by Nippon Steel since 2025",no
-SunCoke Energy,suncoke.com,,no
-Martin Marietta,martinmarietta.com,,no
-ArcelorMittal,arcelormittal.com,"Its former US mills became Cleveland-Cliffs in 2020 (Cliffs is NOT excluded)",no
-Gerdau,gerdau.com,"Includes Gerdau Long Steel North America",no
-Holcim,holcim.com;amrize.com,"Holcim's North American business was spun off as Amrize in 2025",no
-Cemex,cemex.com,,no
-CRH,crh.com;ashgrove.com,"Includes Ash Grove Cement",no
-Tokai Carbon,tokaicarbon.co.jp,"Check US subsidiaries",no
-Tata Steel,tatasteel.com,,no
-Hindustan Zinc,hzlindia.com,,no
-Vedanta Aluminium,vedantaaluminium.com,,no
-Orion Steel,,"Listed on the new website as a US customer; identity and domain to confirm",no
-Melon,,"Listed on the new website as a US customer; identity and domain to confirm",no
+company,domains,reason,notes
+Nucor,nucor.com,customer,"Whole group, incl. Nucor-Yamato Steel, David J. Joseph Company, Harris Rebar"
+U.S. Steel,ussteel.com,customer,"Whole group, incl. Big River Steel. Owned by Nippon Steel since 2025"
+SunCoke Energy,suncoke.com,customer,Whole group
+Martin Marietta,martinmarietta.com,customer,Whole group
+ArcelorMittal,arcelormittal.com,customer; never call,"Whole group, incl. joint venture AM/NS Calvert. Its former US mills became Cleveland-Cliffs in 2020 (Cliffs is NOT excluded)"
+Gerdau,gerdau.com,customer; never call,"Whole group, incl. Gerdau Long Steel North America"
+Holcim,holcim.com,customer,Whole group
+Amrize,amrize.com,never call,"Holcim's former North American business, spun off in 2025"
+Cemex,cemex.com,customer,Whole group
+CRH,crh.com;ashgrove.com,customer,"Whole group, incl. Ash Grove Cement"
+Tokai Carbon,tokaicarbon.co.jp,customer,"Whole group, incl. US subsidiaries"
+Tata Steel,tatasteel.com,customer,Whole group
+Hindustan Zinc,hzlindia.com,customer,Whole group
+Vedanta Aluminium,vedantaaluminium.com,customer,Whole group (Vedanta)
+SSAB,ssab.com,never call,"Whole group, incl. SSAB Americas"
+Heidelberg Materials,heidelbergmaterials.com;heidelbergmaterials.us;lehighhanson.com,never call,"Whole group, incl. the former Lehigh Hanson in the US"
