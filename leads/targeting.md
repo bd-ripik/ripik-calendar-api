@@ -1,5 +1,16 @@
 # Who Sarah calls
 
+## Sectors and offerings (US, first phase)
+
+| Sector | Offering | Use cases |
+|---|---|---|
+| Mining, quarrying and aggregates | James | truck trips, stockpile volume, conveyor belts, big rocks, sizing |
+| Aluminum | James | truck trips, stockpile volume, conveyor belts, sizing |
+| Petrochemicals and chemicals | Vision AI | safety and SOP, restricted zones, flare stacks, hotspots |
+| Oil and gas | Vision AI | safety and SOP only |
+
+Steel and cement are not targeted in this phase.
+
 ## Target persona
 
 People who run the plant day to day:
@@ -8,6 +19,7 @@ People who run the plant day to day:
 - **Operations and production:** operations manager, production manager or superintendent, area manager, process manager, shift or plant supervisor.
 - **Reliability and maintenance:** reliability manager or lead, reliability engineer (senior), maintenance manager or superintendent.
 - **E&I (electrical and instrumentation):** E&I lead, manager or superintendent, electrical manager, instrumentation and controls manager, automation lead.
+- **Oil and gas, and petrochemicals (safety and SOP pitch):** HSE/EHS manager and site safety manager, to be confirmed.
 
 Not targeted: corporate HQ roles, sales, HR, finance and IT. Junior individual contributors are also skipped unless they are a plant's E&I or reliability lead.
 
