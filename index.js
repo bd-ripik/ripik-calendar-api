@@ -206,6 +206,26 @@ async function getAvailability(startDT, endDT, timeZone, intervalMinutes = 30) {
   };
 }
 
+// Returns a short reason if the time breaks the demo rules, otherwise null.
+function demoRuleProblem(startDT) {
+  const weekday = startDT.weekday; // 1 = Monday ... 7 = Sunday
+  const minutes = startDT.hour * 60 + startDT.minute;
+  if (weekday >= 6) return "Demos only run on weekdays.";
+  if (minutes < CONFIG.demoHoursStart * 60 || minutes + 30 > CONFIG.demoHoursEnd * 60) {
+    return `Demos run between ${formatHour(CONFIG.demoHoursStart)} and ${formatHour(CONFIG.demoHoursEnd)} the prospect's time.`;
+  }
+  if (startDT < DateTime.now().plus({ hours: CONFIG.demoMinNoticeHours })) {
+    return `Demos need at least ${CONFIG.demoMinNoticeHours} hours' notice.`;
+  }
+  return null;
+}
+
+function formatHour(h) {
+  const suffix = h >= 12 ? "PM" : "AM";
+  const hour12 = h % 12 === 0 ? 12 : h % 12;
+  return `${hour12} ${suffix}`;
+}
+
 async function isSlotBusy(startDT, timeZone) {
   const info = await getAvailability(startDT, startDT.plus({ minutes: 30 }), timeZone);
   const items = info.scheduleItems.filter(item => item.status !== "free");
@@ -295,6 +315,25 @@ app.post("/book-demo", requireRetell, async (req, res) => {
   }
   if (startDT < DateTime.now().plus({ minutes: 10 })) {
     return toolFailure(res, "That time is in the past or too soon. Ask the prospect for a later time.");
+  }
+
+  // Demos only run on weekdays inside demo hours (prospect's local time), with
+  // enough notice for the team. Anything else gets nearby alternatives.
+  const outsideRules = demoRuleProblem(startDT);
+  if (outsideRules) {
+    try {
+      const from = startDT < DateTime.now() ? DateTime.now() : startDT;
+      const suggestions = await suggestSlots(from, timeZone);
+      return res.json({
+        success: false,
+        available: false,
+        message: `${outsideRules} Offer the first suggestion instead.`,
+        suggestions
+      });
+    } catch (err) {
+      console.error("Suggestion error:", err);
+      return toolFailure(res, `${outsideRules} Ask the prospect for another time.`);
+    }
   }
 
   const startUtc = startDT.toUTC().toJSDate();
