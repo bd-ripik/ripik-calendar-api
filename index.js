@@ -17,7 +17,7 @@ const {
   callbackWindowFor
 } = require("./lib/callingWindow");
 const { resolveTimeZone } = require("./lib/timezones");
-const { pickFreeSlots, combineAvailability, isPlausibleEmail } = require("./lib/booking");
+const { pickFreeSlots, pickAround, combineAvailability, isPlausibleEmail, formatSlot } = require("./lib/booking");
 
 // =========================================================
 // Configuration
@@ -261,6 +261,28 @@ async function suggestSlots(fromDT, timeZone, { distinctDays = false, count = 3,
   });
 }
 
+// Free slots around a time or day the prospect named (see pickAround).
+async function slotsAround(targetDT, timeZone, { mode = "near", count = 2 } = {}) {
+  const earliest = DateTime.now().plus({ hours: CONFIG.demoMinNoticeHours });
+  const base = targetDT < earliest ? earliest : targetDT;
+  const windowStart = DateTime.max(base.setZone(timeZone).startOf("day"), earliest.setZone(timeZone).startOf("hour"));
+  const info = await getAvailability(windowStart, windowStart.plus({ days: 7 }), timeZone, 30);
+
+  return pickAround({
+    target: targetDT.toJSDate(),
+    mode,
+    count,
+    availabilityView: info.availabilityView,
+    windowStart: windowStart.toJSDate(),
+    intervalMinutes: 30,
+    timeZone,
+    earliest: earliest.toJSDate(),
+    startHour: CONFIG.demoHoursStart,
+    endHour: CONFIG.demoHoursEnd,
+    teamWindow: CONFIG.demoTeamWindow
+  });
+}
+
 // Tool: Get_Demo_Slots. Gives Ava concrete free times to offer, one per day,
 // so the prospect only has to pick. Each slot's "start" can be passed straight
 // to Book_Demo_Meeting.
@@ -273,11 +295,51 @@ app.post("/demo-slots", requireRetell, async (req, res) => {
     }
 
     // Optional preferred day (YYYY-MM-DD in the prospect's zone).
-    let fromDT = DateTime.now().setZone(timeZone);
-    if (args.date) {
-      const preferred = DateTime.fromISO(String(args.date), { zone: timeZone });
-      if (preferred.isValid && preferred > fromDT) fromDT = preferred;
+    // A specific time the prospect proposed ("Thursday at 4"): check that
+    // exact time and say so, rather than only listing other times.
+    const dateArg = args.date ? String(args.date) : "";
+    const requested = args.requested_start || args.requestedStart || (/T\d/.test(dateArg) ? dateArg : "");
+    if (requested) {
+      const reqDT = DateTime.fromISO(String(requested), { zone: timeZone });
+      if (reqDT.isValid) {
+        let reason = demoRuleProblem(reqDT);
+        if (!reason && !(await isSlotBusy(reqDT, timeZone))) {
+          const slot = { start: reqDT.toUTC().toISO(), label: formatSlot(reqDT.toJSDate(), timeZone) };
+          console.log("DEMO TIME REQUESTED:", { timeZone, requested: slot.label, available: true });
+          return res.json({
+            success: true,
+            requested_available: true,
+            message: "The requested time is free. Tell the prospect it works, confirm the email, then book it with this start value.",
+            timeZone,
+            slots: [slot]
+          });
+        }
+        reason = reason || "That time is already taken on the team's calendar.";
+        const slots = await slotsAround(reqDT, timeZone, { mode: "near", count: 2 });
+        console.log("DEMO TIME REQUESTED:", { timeZone, requested: reqDT.toISO(), available: false, reason, offered: slots.map(s => s.label) });
+        return res.json({
+          success: true,
+          requested_available: false,
+          reason,
+          message: `${reason} Tell the prospect briefly and offer these times instead.`,
+          timeZone,
+          slots
+        });
+      }
     }
+
+    // A preferred day only ("Thursday", "Thursday afternoon"): a morning and
+    // an afternoon time on that day.
+    if (dateArg) {
+      const dayDT = DateTime.fromISO(dateArg.slice(0, 10), { zone: timeZone });
+      if (dayDT.isValid && dayDT.endOf("day") > DateTime.now()) {
+        const slots = await slotsAround(dayDT, timeZone, { mode: "spread", count: 2 });
+        console.log("DEMO SLOTS FOR DAY:", { timeZone, date: dateArg, slots: slots.map(s => s.label) });
+        if (slots.length > 0) return res.json({ success: true, timeZone, slots });
+      }
+    }
+
+    const fromDT = DateTime.now().setZone(timeZone);
 
     const slots = await suggestSlots(fromDT, timeZone, { distinctDays: true, count: 3, days: 7 });
     console.log("DEMO SLOTS OFFERED:", { timeZone, slots: slots.map(s => s.label) });
@@ -322,8 +384,7 @@ app.post("/book-demo", requireRetell, async (req, res) => {
   const outsideRules = demoRuleProblem(startDT);
   if (outsideRules) {
     try {
-      const from = startDT < DateTime.now() ? DateTime.now() : startDT;
-      const suggestions = await suggestSlots(from, timeZone);
+      const suggestions = await slotsAround(startDT, timeZone, { mode: "near", count: 2 });
       return res.json({
         success: false,
         available: false,
@@ -382,7 +443,7 @@ app.post("/book-demo", requireRetell, async (req, res) => {
 
     if (await isSlotBusy(startDT, timeZone)) {
       await pool.query(`UPDATE demo_bookings SET status = 'slot_busy', updated_at = NOW() WHERE id = $1`, [bookingId]);
-      const suggestions = await suggestSlots(startDT, timeZone);
+      const suggestions = await slotsAround(startDT, timeZone, { mode: "near", count: 2 });
       return res.json({
         success: false,
         available: false,

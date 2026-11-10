@@ -7,7 +7,7 @@ const { normalizePhone } = require("../lib/phone");
 const { verifyRetellSignature, signForTest } = require("../lib/retellSignature");
 const { inWindow, nextInWindow, retryWindowFromEnv, callbackWindowFor } = require("../lib/callingWindow");
 const { resolveTimeZone } = require("../lib/timezones");
-const { pickFreeSlots, combineAvailability, isPlausibleEmail } = require("../lib/booking");
+const { pickFreeSlots, pickAround, combineAvailability, isPlausibleEmail } = require("../lib/booking");
 
 test("normalizePhone keeps E.164 and fixes US formats", () => {
   assert.equal(normalizePhone("+1 (312) 899-3097"), "+13128993097");
@@ -161,4 +161,31 @@ test("email sanity check", () => {
   assert.equal(isPlausibleEmail("anshul_gupta@ripik.ai"), true);
   assert.equal(isPlausibleEmail("anshul at ripik dot ai"), false);
   assert.equal(isPlausibleEmail("x@y"), false);
+});
+
+test("pickAround offers times near a requested time, or morning and afternoon for a day", () => {
+  // Thu 2026-11-12 00:00 ET (05:00 UTC), 6 days of 30-min intervals.
+  // Thursday 16:00 ET (slot 32) is busy; everything else is free.
+  const view = "0".repeat(32) + "2" + "0".repeat(6 * 48 - 33);
+  const base = {
+    availabilityView: view,
+    windowStart: new Date("2026-11-12T05:00:00Z"),
+    intervalMinutes: 30,
+    timeZone: "America/New_York",
+    earliest: new Date("2026-11-12T00:00:00Z"),
+    startHour: 9,
+    endHour: 19
+  };
+
+  // "Thursday at 4" is taken: offer 3:30 and 4:30 that day.
+  const near = pickAround({ ...base, target: new Date("2026-11-12T21:00:00Z"), mode: "near", count: 2 });
+  assert.deepEqual(near.map(s => s.start), ["2026-11-12T20:30:00.000Z", "2026-11-12T21:30:00.000Z"]);
+
+  // "Thursday": first morning and first afternoon that day.
+  const spread = pickAround({ ...base, target: new Date("2026-11-12T05:00:00Z"), mode: "spread", count: 2 });
+  assert.deepEqual(spread.map(s => s.start), ["2026-11-12T14:00:00.000Z", "2026-11-12T18:00:00.000Z"]);
+
+  // "Saturday at noon": nothing that day, so Monday morning and Tuesday afternoon.
+  const weekend = pickAround({ ...base, target: new Date("2026-11-14T17:00:00Z"), mode: "near", count: 2 });
+  assert.deepEqual(weekend.map(s => s.start), ["2026-11-16T14:00:00.000Z", "2026-11-17T18:00:00.000Z"]);
 });
