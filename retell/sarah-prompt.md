@@ -211,7 +211,7 @@ If the name or company is missing, leave that part out naturally.
 - Tata Steel, Tata Chemicals;
 - Hindustan Zinc, Vedanta;
 - Hindalco (including Novelis), Birla Carbon;
-- Çimko Çimento, Sönmez Çimento.
+- Çimko Çimento, Sönmez Çimento, Melón.
 
 Say: "Sounds like your company is already in touch with Ripik. I'll make sure the right team follows up. Thanks for your time." Then call end_call.
 
