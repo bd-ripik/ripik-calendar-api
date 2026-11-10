@@ -1,15 +1,16 @@
 # Who Sarah calls
 
-## Sectors and offerings (US, first phase)
+## Sectors and use cases (US, first phase)
 
-| Sector | Offering | Use cases |
-|---|---|---|
-| Mining, quarrying and aggregates | James | truck trips, stockpile volume, conveyor belts, big rocks, sizing |
-| Aluminum | James | truck trips, stockpile volume, conveyor belts, sizing |
-| Petrochemicals and chemicals | Vision AI | safety and SOP, restricted zones, flare stacks, hotspots |
-| Oil and gas | Vision AI | safety and SOP only |
+Sarah pitches Vision AI only. James (truck trips, volume analysis, conveyor belts, big rocks and sizing, for mining and aluminum) is new and unsold, and is pitched by the sales team in the demo, not on the call.
 
-Steel and cement are not targeted in this phase.
+| Sector | Use cases Sarah pitches |
+|---|---|
+| Quarrying and aggregates | big rocks, material sizing, foreign objects before the crusher |
+| Mining | truck trips, shaft monitoring, hoist monitoring, conveyor belts |
+| Petrochemicals and chemicals | best fit from the deck: flare stacks, furnace, boiler and switchyard hotspots, conveyors, raw material |
+| Oil and gas, energy, power, data center construction, general industrial | safety and SOP |
+| Cement (not a first-phase target) | kiln, sizing before the crusher |
 
 ## Target persona
 
@@ -19,7 +20,7 @@ People who run the plant day to day:
 - **Operations and production:** operations manager, production manager or superintendent, area manager, process manager, shift or plant supervisor.
 - **Reliability and maintenance:** reliability manager or lead, reliability engineer (senior), maintenance manager or superintendent.
 - **E&I (electrical and instrumentation):** E&I lead, manager or superintendent, electrical manager, instrumentation and controls manager, automation lead.
-- **Oil and gas, and petrochemicals (safety and SOP pitch):** HSE/EHS manager and site safety manager, to be confirmed.
+- **Oil and gas:** plant and operations roles above, plus HSE/EHS and site safety managers.
 
 Not targeted: corporate HQ roles, sales, HR, finance and IT. Junior individual contributors are also skipped unless they are a plant's E&I or reliability lead.
 
