@@ -23,7 +23,7 @@ For every custom function:
 
 | Tool name | Method and URL | Parameters (all strings) |
 |---|---|---|
-| `Get_Demo_Slots` **(new)** | POST `<RAILWAY_URL>/demo-slots` | `timeZone` (required, IANA zone such as America/New_York), `date` (optional, YYYY-MM-DD preferred day) |
+| `Get_Demo_Slots` **(new)** | POST `<RAILWAY_URL>/demo-slots` | `timeZone` (required, IANA zone such as America/New_York), `date` (optional, YYYY-MM-DD preferred day), `requested_start` (optional, exact time the prospect proposed, e.g. 2026-11-12T16:00) |
 | `Book_Demo_Meeting` | POST `<RAILWAY_URL>/book-demo` | `name`, `email`, `start` (ISO 8601), `timeZone` — all required |
 | `schedule_callback` | POST `<RAILWAY_URL>/schedule-callback` | `name`, `phone`, `callback_time` (ISO 8601), `time_zone` |
 | `add_to_dnd` | POST `<RAILWAY_URL>/add-dnd` | `phone`, `reason` |
@@ -32,7 +32,7 @@ For every custom function:
 | `end_call` | built-in | — |
 
 Suggested descriptions, which the agent reads to decide when to use each tool:
-- **Get_Demo_Slots:** "Get the next free 30-minute demo times in the prospect's time zone. Call this before proposing times. Each slot has a label to say aloud and a start value to pass to Book_Demo_Meeting."
+- **Get_Demo_Slots:** "Get free 30-minute demo times in the prospect's time zone. Call this before proposing times. Pass date for a preferred day, or requested_start to check an exact time the prospect proposed (the reply says requested_available true or false). Each slot has a label to say aloud and a start value to pass to Book_Demo_Meeting."
 - **Book_Demo_Meeting:** "Book the 30-minute Teams demo. Only after the email is confirmed and a time is agreed."
 - **schedule_callback:** "Schedule a call back at the time the prospect asked for. Phone is {{user_number}}."
 - **add_to_dnd:** "Permanently stop calling this number. Phone is {{user_number}}."
