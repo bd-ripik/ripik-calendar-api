@@ -129,8 +129,8 @@ test("pickFreeSlots can offer one slot per day", () => {
     count: 3,
     distinctDays: true
   });
-  // Thu 09:00, Fri 09:00, then skip the weekend -> Mon is beyond 4 days, so 2.
-  assert.deepEqual(slots.map(s => s.start), ["2026-11-12T14:00:00.000Z", "2026-11-13T14:00:00.000Z"]);
+  // Thu morning 09:00, Fri afternoon 13:00, then the weekend -> Mon is beyond 4 days, so 2.
+  assert.deepEqual(slots.map(s => s.start), ["2026-11-12T14:00:00.000Z", "2026-11-13T18:00:00.000Z"]);
 });
 
 test("combineAvailability is free only when everyone is free", () => {
