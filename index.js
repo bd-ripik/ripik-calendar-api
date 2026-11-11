@@ -17,7 +17,7 @@ const {
   callbackWindowFor
 } = require("./lib/callingWindow");
 const { resolveTimeZone } = require("./lib/timezones");
-const { leadVariables, leadTimeZone, followUpWindow, retryPlan, continueChain, firstDelayMs, nextDelayMs: nextRetryDelayMs, retryContext } = require("./lib/followUp");
+const { parseCallbackTime, leadVariables, leadTimeZone, followUpWindow, retryPlan, continueChain, firstDelayMs, nextDelayMs: nextRetryDelayMs, retryContext } = require("./lib/followUp");
 const { pickFreeSlots, pickAround, combineAvailability, isPlausibleEmail, formatSlot } = require("./lib/booking");
 
 // =========================================================
@@ -592,13 +592,13 @@ app.post("/schedule-callback", requireRetell, async (req, res) => {
     const phone = normalizePhone(args.phone) || callPhone(req);
     const name = args.name || null;
     const timeZone = isValidTimeZone(args.time_zone) ? args.time_zone : "UTC";
-    const callbackTime = new Date(args.callback_time);
+    const callbackTime = parseCallbackTime(args.callback_time, timeZone);
 
     if (!phone) {
       console.error("CALLBACK REJECTED - NO VALID PHONE:", { received_phone: args.phone });
       return toolFailure(res, "Could not identify the phone number for the callback.");
     }
-    if (!args.callback_time || Number.isNaN(callbackTime.getTime())) {
+    if (!callbackTime) {
       return toolFailure(res, "Callback time could not be understood. Use an ISO 8601 date and time.");
     }
     if (callbackTime.getTime() < Date.now() - 5 * 60 * 1000) {
