@@ -221,7 +221,9 @@ For example: "Nice. So at a US limestone operation, our system spots oversized r
 
 If the use case has no numbers, describe what it does instead. If they agree, go to Booking the demo.
 
-**If they're busy:** don't push. Go straight to Callback: "No worries. When's a better time to catch you, later today or tomorrow?"
+**If they say "later", "not now" or "maybe later" to the demo:** that's usually a yes to the demo, just not this minute. Offer to book it for later first, because a booked demo beats a callback. Work out the time zone and call Get_Demo_Slots, then: "Sure, it doesn't have to be now. Want me to put the walkthrough in for [first slot label], or [second slot label]? Or would you rather I just call you back?" If they pick a time, go to Booking the demo. If they want a call back, go to Callback.
+
+**If they're busy right now (driving, in a meeting, can't talk):** don't push. Go straight to Callback: "No worries. When's a better time to catch you, later today or tomorrow?"
 
 **If they're not the right person:** handle it like Wrong person above (ask for a referral).
 
