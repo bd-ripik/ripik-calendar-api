@@ -223,3 +223,23 @@ test("follow-ups keep lead details and use the prospect's own hours", () => {
   assert.deepEqual(followUpWindow("America/Anchorage", fallback), { timeZone: "America/Anchorage", startHour: 9, endHour: 17, weekdaysOnly: true });
   assert.deepEqual(followUpWindow(null, fallback), fallback);
 });
+
+test("callback times are read in the prospect's time zone", () => {
+  const { parseCallbackTime } = require("../lib/followUp");
+  // Day-1 bug: "3 PM Central" was stored as 3 PM UTC (9 AM Central).
+  assert.equal(parseCallbackTime("2026-11-11T15:00:00", "America/Chicago").toISOString(), "2026-11-11T21:00:00.000Z");
+  // Explicit offsets win.
+  assert.equal(parseCallbackTime("2026-11-11T15:00:00Z", "America/Chicago").toISOString(), "2026-11-11T15:00:00.000Z");
+  assert.equal(parseCallbackTime("2026-11-11T15:00:00-05:00", "America/Chicago").toISOString(), "2026-11-11T20:00:00.000Z");
+  // No zone: UTC (used for relative times).
+  assert.equal(parseCallbackTime("2026-11-11T15:00:00", null).toISOString(), "2026-11-11T15:00:00.000Z");
+  assert.equal(parseCallbackTime("tomorrow", "America/Chicago"), null);
+});
+
+test("callback time parsing handles DST and odd input", () => {
+  const { parseCallbackTime } = require("../lib/followUp");
+  // Summer (CDT, UTC-5) vs winter (CST, UTC-6).
+  assert.equal(parseCallbackTime("2026-07-01T15:00", "America/Chicago").toISOString(), "2026-07-01T20:00:00.000Z");
+  assert.equal(parseCallbackTime("2026-11-11 15:00:00", "America/Los_Angeles").toISOString(), "2026-11-11T23:00:00.000Z");
+  assert.equal(parseCallbackTime("", "America/Chicago"), null);
+});
