@@ -189,3 +189,37 @@ test("pickAround offers times near a requested time, or morning and afternoon fo
   const weekend = pickAround({ ...base, target: new Date("2026-11-14T17:00:00Z"), mode: "near", count: 2 });
   assert.deepEqual(weekend.map(s => s.start), ["2026-11-16T14:00:00.000Z", "2026-11-17T18:00:00.000Z"]);
 });
+
+const { leadVariables, leadTimeZone, followUpWindow, retryPlan, continueChain, firstDelayMs, nextDelayMs } = require("../lib/followUp");
+
+test("retryPlan follows the day-1 rules", () => {
+  const base = { inVoicemail: false, prospectOutcome: "no_meaningful_conversation", automaticRetryAllowed: true, demoIntentIncomplete: false };
+  assert.deepEqual(retryPlan({ ...base, disconnectReason: "dial_no_answer" }), { retry: true, type: "standard" });
+  assert.deepEqual(retryPlan({ ...base, disconnectReason: "user_hangup" }), { retry: true, type: "hung_up" });
+  assert.deepEqual(retryPlan({ ...base, disconnectReason: "user_declined" }), { retry: true, type: "hung_up" });
+  assert.equal(retryPlan({ ...base, disconnectReason: "ivr_reached" }).retry, false);
+  assert.equal(retryPlan({ ...base, disconnectReason: "invalid_destination" }).retry, false);
+  assert.deepEqual(retryPlan({ ...base, disconnectReason: "voicemail_reached", inVoicemail: true }), { retry: true, type: "voicemail" });
+  assert.equal(retryPlan({ ...base, disconnectReason: "agent_hangup", prospectOutcome: "not_interested" }).retry, false);
+  assert.deepEqual(retryPlan({ ...base, disconnectReason: "agent_hangup", demoIntentIncomplete: true }), { retry: true, type: "demo_recovery" });
+
+  // A chain stops once someone picks up and hangs up.
+  assert.equal(continueChain(retryPlan({ ...base, disconnectReason: "user_hangup" })), false);
+  assert.equal(continueChain(retryPlan({ ...base, disconnectReason: "dial_no_answer" })), true);
+
+  assert.equal(firstDelayMs("standard"), 2 * 3600e3);
+  assert.equal(firstDelayMs("hung_up"), 72 * 3600e3);
+  assert.equal(nextDelayMs("hung_up", 1), null);
+  assert.equal(nextDelayMs("standard", 1), 24 * 3600e3);
+  assert.equal(nextDelayMs("standard", 2), null);
+  assert.equal(nextDelayMs("voicemail", 1), 72 * 3600e3);
+});
+
+test("follow-ups keep lead details and use the prospect's own hours", () => {
+  const vars = leadVariables({ prospect_name: "Ben Beard", company: "Hecla Mining", industry: "Mining", state: "Alaska", city: "Juneau", country: "United States", title: "", email: "{{email}}", junk: "x" });
+  assert.deepEqual(vars, { prospect_name: "Ben Beard", company: "Hecla Mining", industry: "Mining", city: "Juneau", state: "Alaska", country: "United States" });
+  assert.equal(leadTimeZone(vars), "America/Anchorage");
+  const fallback = { timeZone: "America/New_York", startHour: 11, endHour: 17, weekdaysOnly: true };
+  assert.deepEqual(followUpWindow("America/Anchorage", fallback), { timeZone: "America/Anchorage", startHour: 9, endHour: 17, weekdaysOnly: true });
+  assert.deepEqual(followUpWindow(null, fallback), fallback);
+});
