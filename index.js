@@ -17,6 +17,7 @@ const {
   callbackWindowFor
 } = require("./lib/callingWindow");
 const { resolveTimeZone } = require("./lib/timezones");
+const { leadVariables, leadTimeZone, followUpWindow, retryPlan, continueChain, firstDelayMs, nextDelayMs: nextRetryDelayMs, retryContext } = require("./lib/followUp");
 const { pickFreeSlots, pickAround, combineAvailability, isPlausibleEmail, formatSlot } = require("./lib/booking");
 
 // =========================================================
@@ -610,10 +611,10 @@ app.post("/schedule-callback", requireRetell, async (req, res) => {
     }
 
     const result = await pool.query(
-      `INSERT INTO callbacks (name, phone, callback_time, time_zone, status)
-       VALUES ($1, $2, $3, $4, 'pending')
+      `INSERT INTO callbacks (name, phone, callback_time, time_zone, status, lead_vars)
+       VALUES ($1, $2, $3, $4, 'pending', $5)
        RETURNING *`,
-      [name, phone, callbackTime, timeZone]
+      [name, phone, callbackTime, timeZone, JSON.stringify(leadVariables(req.body?.call?.retell_llm_dynamic_variables))]
     );
 
     console.log("CALLBACK SCHEDULED:", { id: result.rows[0].id, phone, callback_time: callbackTime, timeZone });
@@ -692,24 +693,13 @@ async function placeCall({ phone, name, purpose, retryType, variables }) {
 }
 
 function retryVariables(retryType) {
-  return {
-    retry_type: retryType || "standard",
-    retry_context:
-      retryType === "demo_recovery"
-        ? "The prospect already agreed to a demo, but the previous call disconnected before the booking was completed. Resume the demo booking immediately."
-        : "This is an automatic follow-up attempt because the previous outbound call did not connect with the prospect."
-  };
+  return { retry_type: retryType || "standard", retry_context: retryContext(retryType) };
 }
 
 // =========================================================
 // Retell webhook
 // =========================================================
 
-function getVoicemailRetryDelayMs(retryCount) {
-  // Maximum 2 voicemail retries: +24 hours, then +72 hours.
-  const schedule = { 0: 24 * 60 * 60 * 1000, 1: 72 * 60 * 60 * 1000 };
-  return schedule[retryCount] ?? null;
-}
 
 async function recordCall(call) {
   if (!call || !call.call_id) return;
@@ -791,15 +781,10 @@ app.post("/retell-webhook", requireRetell, async (req, res) => {
       customAnalysis?.demo_intent_incomplete === true || customAnalysis?.demo_intent_incomplete === "true";
     const name = call?.retell_llm_dynamic_variables?.prospect_name || null;
 
-    const retryableDisconnectReasons = ["dial_no_answer", "dial_busy", "dial_failed", "inactivity"];
-    const retryBecauseOfDisconnect = retryableDisconnectReasons.includes(disconnectReason);
-    const retryBecauseOfAnalysis = automaticRetryAllowed && prospectOutcome === "no_meaningful_conversation";
-    const meaningfulConversation = prospectOutcome && prospectOutcome !== "no_meaningful_conversation";
-
-    const shouldRetry =
-      demoIntentIncomplete ||
-      inVoicemail ||
-      (!meaningfulConversation && (retryBecauseOfDisconnect || retryBecauseOfAnalysis));
+    // Which follow-up (if any) this call earns. See lib/followUp.js.
+    const plan = retryPlan({ disconnectReason, inVoicemail, prospectOutcome, automaticRetryAllowed, demoIntentIncomplete });
+    const shouldRetry = plan.retry;
+    const leadVars = leadVariables(call?.retell_llm_dynamic_variables);
 
     // ---------------------------------------------------------
     // STEP A — Is this call already part of an existing retry chain?
@@ -829,12 +814,12 @@ app.post("/retell-webhook", requireRetell, async (req, res) => {
              next_retry_time = NULL, updated_at = NOW() WHERE id = $1`,
           [retry.id]
         );
-        await insertRetryChain({ callId, phone, name, retryType: "demo_recovery", lastOutcome: "demo_booking_incomplete" });
+        await insertRetryChain({ callId, phone, name, retryType: "demo_recovery", lastOutcome: "demo_booking_incomplete", leadVars });
         console.log("RETRY CHAIN ESCALATED TO DEMO RECOVERY:", retry.id);
         return res.status(200).json({ success: true, retry_scheduled: true, retry_type: "demo_recovery" });
       }
 
-      if (!shouldRetry) {
+      if (!continueChain(plan)) {
         await pool.query(
           `UPDATE call_retries SET status = 'completed', last_outcome = $1, updated_at = NOW() WHERE id = $2`,
           [prospectOutcome || disconnectReason || "meaningful_conversation", retry.id]
@@ -843,12 +828,7 @@ app.post("/retell-webhook", requireRetell, async (req, res) => {
         return res.status(200).json({ success: true, retry_scheduled: false, retry_chain_completed: true });
       }
 
-      const maxRetries = retryType === "demo_recovery" ? 1 : 2;
-      let nextDelayMs = null;
-      if (retry.retry_count < maxRetries) {
-        if (retryType === "voicemail") nextDelayMs = getVoicemailRetryDelayMs(retry.retry_count);
-        else if (retryType === "standard") nextDelayMs = 24 * 60 * 60 * 1000;
-      }
+      const nextDelayMs = nextRetryDelayMs(retryType, retry.retry_count);
 
       if (!nextDelayMs) {
         const outcome =
@@ -902,7 +882,7 @@ app.post("/retell-webhook", requireRetell, async (req, res) => {
       return res.status(200).json({ success: true, retry_scheduled: false, blocked_by_dnd: true });
     }
 
-    const retryType = demoIntentIncomplete ? "demo_recovery" : inVoicemail ? "voicemail" : "standard";
+    const retryType = plan.type;
 
     // One active chain per phone — except a demo recovery, which replaces it.
     const activeChain = await pool.query(
@@ -931,7 +911,7 @@ app.post("/retell-webhook", requireRetell, async (req, res) => {
           ? "voicemail"
           : prospectOutcome || disconnectReason || "unknown";
 
-    const nextRetryTime = await insertRetryChain({ callId, phone, name, retryType, lastOutcome });
+    const nextRetryTime = await insertRetryChain({ callId, phone, name, retryType, lastOutcome, leadVars });
 
     console.log(`AUTO RETRY QUEUED: ${phone} (${retryType}) at ${nextRetryTime.toISOString()}`);
     return res.status(200).json({
@@ -947,21 +927,15 @@ app.post("/retell-webhook", requireRetell, async (req, res) => {
   }
 });
 
-async function insertRetryChain({ callId, phone, name, retryType, lastOutcome }) {
-  const firstDelayMs =
-    retryType === "demo_recovery"
-      ? 60 * 1000
-      : retryType === "voicemail"
-        ? getVoicemailRetryDelayMs(0)
-        : 2 * 60 * 60 * 1000;
-
-  const nextRetryTime = new Date(Date.now() + firstDelayMs);
+async function insertRetryChain({ callId, phone, name, retryType, lastOutcome, leadVars = {} }) {
+  const nextRetryTime = new Date(Date.now() + firstDelayMs(retryType));
+  const timeZone = leadTimeZone(leadVars);
 
   await pool.query(
     `INSERT INTO call_retries
-       (original_call_id, phone, name, retry_count, next_retry_time, status, last_outcome, retry_type)
-     VALUES ($1, $2, $3, 0, $4, 'pending', $5, $6)`,
-    [callId, phone, name, nextRetryTime, lastOutcome, retryType]
+       (original_call_id, phone, name, retry_count, next_retry_time, status, last_outcome, retry_type, lead_vars, time_zone)
+     VALUES ($1, $2, $3, 0, $4, 'pending', $5, $6, $7, $8)`,
+    [callId, phone, name || leadVars.prospect_name || null, nextRetryTime, lastOutcome, retryType, JSON.stringify(leadVars), timeZone]
   );
   return nextRetryTime;
 }
@@ -1022,7 +996,7 @@ async function processDueCallbacks() {
           phone: callback.phone,
           name: callback.name,
           purpose: "callback",
-          variables: { callback_context: "The prospect previously asked to be called back." }
+          variables: { ...(callback.lead_vars || {}), callback_context: "The prospect previously asked to be called back." }
         });
 
         if (result.blocked) {
@@ -1073,6 +1047,7 @@ async function processDueRetries() {
              (retry_type = 'demo_recovery' AND retry_count < 1)
              OR (retry_type = 'voicemail' AND retry_count < 2)
              OR (COALESCE(retry_type, 'standard') = 'standard' AND retry_count < 2)
+             OR (retry_type = 'hung_up' AND retry_count < 1)
            )
          ORDER BY
            CASE WHEN retry_type = 'demo_recovery' THEN 0
@@ -1089,7 +1064,10 @@ async function processDueRetries() {
       const retryType = retry.retry_type || "standard";
       // A demo recovery follows a live conversation, so it uses the wider
       // callback window; ordinary retries use the business window.
-      const window = retryType === "demo_recovery" ? callbackWindowFor(null) : CONFIG.retryWindow;
+      const window =
+        retryType === "demo_recovery"
+          ? callbackWindowFor(retry.time_zone)
+          : followUpWindow(retry.time_zone, CONFIG.retryWindow);
       const now = new Date();
 
       if (!inWindow(now, window)) {
@@ -1108,7 +1086,7 @@ async function processDueRetries() {
           name: retry.name,
           purpose: "retry",
           retryType,
-          variables: retryVariables(retryType)
+          variables: { ...(retry.lead_vars || {}), ...retryVariables(retryType) }
         });
 
         if (result.blocked) {
@@ -1181,6 +1159,9 @@ async function initDatabase() {
   await pool.query(`ALTER TABLE call_retries ADD COLUMN IF NOT EXISTS current_call_id TEXT`);
   await pool.query(`ALTER TABLE call_retries ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE call_retries ADD COLUMN IF NOT EXISTS retry_type TEXT DEFAULT 'standard'`);
+  await pool.query(`ALTER TABLE call_retries ADD COLUMN IF NOT EXISTS lead_vars JSONB DEFAULT '{}'::jsonb`);
+  await pool.query(`ALTER TABLE call_retries ADD COLUMN IF NOT EXISTS time_zone TEXT`);
+  await pool.query(`ALTER TABLE callbacks ADD COLUMN IF NOT EXISTS lead_vars JSONB DEFAULT '{}'::jsonb`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS dnd_numbers (
