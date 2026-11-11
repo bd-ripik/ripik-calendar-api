@@ -67,6 +67,12 @@ Add these new text fields, filled in only when they apply:
 
 The backend already reads `prospect_outcome`, `automatic_retry_allowed`, `demo_intent_incomplete` and `dnd_requested`. The new fields are for the team's follow-up and reporting.
 
+### Call Successful (built-in field)
+
+Success means a demo was booked, and nothing else. Edit the **Call Successful** prompt in Post Call Extraction to:
+
+> Mark the call successful ONLY if a demo meeting was actually booked during this call. That means the Book_Demo_Meeting tool was called and its response contained "success": true, or the agent confirmed the booking to the prospect with words like "You're booked for [day and time]". Everything else is NOT successful, including: a callback scheduled, interest shown, information or an email requested, a referral given, voicemail, a phone menu (IVR), a wrong or dead number, a short call or hang-up, a do-not-call request, and a demo the prospect agreed to but that was not booked (for example because the booking failed or the call dropped). If you are unsure, mark the call unsuccessful.
+
 ## 5. Agent settings to keep
 
 These are as configured in August and don't need changing:
