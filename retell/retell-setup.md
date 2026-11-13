@@ -93,3 +93,20 @@ phone_number,prospect_name,title,company,industry,email,city,state,country
 ## 7. Inbound calls
 
 Check what happens when someone calls back `+1 447 226 1059`. People often return a missed call. If no agent answers inbound calls on that number, assign one (the same Sarah agent works), so those callers can book a demo too.
+
+## Voicemail message (agent → Voicemail → Leave a message)
+
+> Hi, this is Sarah from Ripik. We help quarries, mines and chemical plants cut unplanned downtime with camera-based monitoring, and Martin Marietta and Nucor already use it. If a quick 30-minute look is useful, call me back on 447-226-1059. Thanks.
+
+## Speed settings (for a natural, fast-responding call)
+
+- **Transcription mode:** Optimize for speed (accuracy mode adds about 200 ms per turn).
+- **Boosted keywords:** keep only `Ripik` (each keyword adds transcription time).
+- **LLM:** GPT-4.1 with **Fast tier** on (dedicated capacity; costs more per minute).
+- **Responsiveness:** high.
+- **Backchannel:** off.
+
+## Call lists
+
+After uploading a campaign CSV to Retell, upload the same file at
+`https://<railway-domain>/leads/upload?token=<REPORT_TOKEN>` so follow-ups, callbacks and the call report know each lead's name, company and industry.

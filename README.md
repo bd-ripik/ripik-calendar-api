@@ -64,3 +64,11 @@ https://<your-railway-domain>/reports/calls.csv?token=<REPORT_TOKEN>&days=7
 - Connected calls without a stored transcript are fetched from Retell on the fly (backfill).
 - Calls before `REPORT_SINCE` (default 2026-11-01, i.e. the old Aug/Sep setup) never appear.
 - The route returns 404 unless `REPORT_TOKEN` (20+ characters) is set and matches. Transcripts contain personal data: keep the link private.
+
+## Call lists (lead details)
+
+Retell's dialer passes contact fields to the agent but not to our webhook. Upload each campaign CSV at `/leads/upload?token=<REPORT_TOKEN>` (a small page with a file picker). The server stores leads by phone in `leads`, uses them for follow-ups, callbacks and the call report, and fills in details on pending follow-ups and callbacks.
+
+## Automatic callbacks
+
+If a call ends with `prospect_outcome = callback_requested` and no callback is pending for that number, the server books one for the next weekday at about the same local time (kept within 9:00 AM–4:30 PM local).
