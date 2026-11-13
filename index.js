@@ -19,7 +19,8 @@ const {
 } = require("./lib/callingWindow");
 const { resolveTimeZone } = require("./lib/timezones");
 const { callDetails, reportRow, toCsv } = require("./lib/callReport");
-const { parseCallbackTime, leadVariables, leadTimeZone, followUpWindow, retryPlan, continueChain, firstDelayMs, nextDelayMs: nextRetryDelayMs, retryContext } = require("./lib/followUp");
+const { leadsFromCsv } = require("./lib/leads");
+const { defaultCallbackTime, parseCallbackTime, leadVariables, leadTimeZone, followUpWindow, retryPlan, continueChain, firstDelayMs, nextDelayMs: nextRetryDelayMs, retryContext } = require("./lib/followUp");
 const { pickFreeSlots, pickAround, combineAvailability, isPlausibleEmail, formatSlot } = require("./lib/booking");
 
 // =========================================================
@@ -69,6 +70,7 @@ const app = express();
 // Keep the exact request body so Retell signatures can be verified.
 app.use(
   express.json({
+    limit: "5mb",
     verify: (req, _res, buf) => {
       req.rawBody = buf.toString("utf8");
     }
@@ -588,6 +590,11 @@ app.post("/add-dnd", requireRetell, async (req, res) => {
 // Requested callbacks
 // =========================================================
 
+async function callLeadVars(req, phone) {
+  const vars = leadVariables(req.body?.call?.retell_llm_dynamic_variables);
+  return vars.prospect_name ? vars : { ...(await lookupLeadVars(phone)), ...vars };
+}
+
 app.post("/schedule-callback", requireRetell, async (req, res) => {
   try {
     const args = toolArgs(req);
@@ -616,7 +623,7 @@ app.post("/schedule-callback", requireRetell, async (req, res) => {
       `INSERT INTO callbacks (name, phone, callback_time, time_zone, status, lead_vars)
        VALUES ($1, $2, $3, $4, 'pending', $5)
        RETURNING *`,
-      [name, phone, callbackTime, timeZone, JSON.stringify(leadVariables(req.body?.call?.retell_llm_dynamic_variables))]
+      [name, phone, callbackTime, timeZone, JSON.stringify(await callLeadVars(req, phone))]
     );
 
     console.log("CALLBACK SCHEDULED:", { id: result.rows[0].id, phone, callback_time: callbackTime, timeZone });
@@ -703,6 +710,38 @@ function retryVariables(retryType) {
 // =========================================================
 
 
+// Lead details for a phone number from the uploaded call lists.
+async function lookupLeadVars(phone) {
+  if (!phone) return {};
+  try {
+    const { rows } = await pool.query(`SELECT vars FROM leads WHERE phone = $1`, [phone]);
+    return rows[0]?.vars || {};
+  } catch (err) {
+    console.error("Lead lookup failed:", err.message);
+    return {};
+  }
+}
+
+// Book a default callback (next weekday, same local time) unless one is
+// already pending for this number.
+async function ensureCallback({ phone, name, leadVars, callId }) {
+  const existing = await pool.query(
+    `SELECT 1 FROM callbacks WHERE phone = $1 AND status IN ('pending', 'dialing') LIMIT 1`,
+    [phone]
+  );
+  if (existing.rows.length > 0) return;
+  if (await isDnd(phone)) return;
+
+  const timeZone = leadTimeZone(leadVars) || "America/New_York";
+  const callbackTime = defaultCallbackTime(new Date(), timeZone);
+  await pool.query(
+    `INSERT INTO callbacks (name, phone, callback_time, time_zone, status, lead_vars)
+     VALUES ($1, $2, $3, $4, 'pending', $5)`,
+    [name, phone, callbackTime, timeZone, JSON.stringify(leadVars || {})]
+  );
+  console.log("DEFAULT CALLBACK BOOKED:", { phone, callId, callback_time: callbackTime.toISOString(), timeZone });
+}
+
 async function recordCall(call) {
   if (!call || !call.call_id) return;
   const phone = normalizePhone(call.direction === "inbound" ? call.from_number : call.to_number);
@@ -768,6 +807,89 @@ function reportTokenOk(given) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+// Upload a campaign CSV so the server knows each lead's details by phone.
+// GET shows a small page; the page posts the file's text as JSON.
+app.get("/leads/upload", (req, res) => {
+  if (!reportTokenOk(req.query.token)) return res.status(404).send("Not found");
+  res.set("Cache-Control", "no-store");
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Upload call list</title>
+<style>body{font-family:system-ui,sans-serif;max-width:560px;margin:48px auto;padding:0 16px}
+button{padding:8px 16px;font-size:15px}#out{margin-top:16px;white-space:pre-wrap}</style></head>
+<body><h2>Upload a call list</h2>
+<p>Choose the same CSV you uploaded to Retell (columns: phone_number, prospect_name, title, company, industry, email, city, state, country).</p>
+<p><input type="file" id="f" accept=".csv,text/csv"></p>
+<p><button id="b">Upload</button></p><div id="out"></div>
+<script>
+document.getElementById("b").onclick = async () => {
+  const out = document.getElementById("out");
+  const file = document.getElementById("f").files[0];
+  if (!file) { out.textContent = "Choose a file first."; return; }
+  out.textContent = "Uploading...";
+  const csv = await file.text();
+  const r = await fetch(location.pathname + location.search, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ csv, list: file.name })
+  });
+  out.textContent = await r.text();
+};
+</script></body></html>`);
+});
+
+app.post("/leads/upload", async (req, res) => {
+  if (!reportTokenOk(req.query.token)) return res.status(404).send("Not found");
+  try {
+    const { leads, skipped, error } = leadsFromCsv(req.body?.csv);
+    if (error) return res.status(400).send(error);
+    const list = String(req.body?.list || "").slice(0, 120) || null;
+
+    for (const lead of leads) {
+      await pool.query(
+        `INSERT INTO leads (phone, vars, list_name, uploaded_at) VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (phone) DO UPDATE SET vars = EXCLUDED.vars, list_name = EXCLUDED.list_name, uploaded_at = NOW()`,
+        [lead.phone, JSON.stringify(lead.vars), list]
+      );
+    }
+
+    // Give pending follow-ups and callbacks for these numbers their details.
+    const phones = leads.map(l => l.phone);
+    const retries = await pool.query(
+      `UPDATE call_retries r SET lead_vars = l.vars, updated_at = NOW()
+       FROM leads l
+       WHERE r.phone = l.phone AND r.phone = ANY($1)
+         AND r.status IN ('pending', 'processing', 'waiting_result')
+         AND COALESCE(r.lead_vars, '{}'::jsonb) = '{}'::jsonb`,
+      [phones]
+    );
+    const callbacks = await pool.query(
+      `UPDATE callbacks c SET lead_vars = l.vars, updated_at = NOW()
+       FROM leads l
+       WHERE c.phone = l.phone AND c.phone = ANY($1)
+         AND c.status = 'pending' AND COALESCE(c.lead_vars, '{}'::jsonb) = '{}'::jsonb`,
+      [phones]
+    );
+    // Retries need a time zone for local calling hours.
+    for (const lead of leads) {
+      const tz = leadTimeZone(lead.vars);
+      if (tz) {
+        await pool.query(
+          `UPDATE call_retries SET time_zone = $2 WHERE phone = $1 AND time_zone IS NULL
+             AND status IN ('pending', 'processing', 'waiting_result')`,
+          [lead.phone, tz]
+        );
+      }
+    }
+
+    const msg = `Saved ${leads.length} leads from ${list || "the file"}.` +
+      (skipped.length ? ` Skipped ${skipped.length} rows without a valid phone (rows ${skipped.map(s => s.row).join(", ")}).` : "") +
+      ` Updated ${retries.rowCount} pending follow-ups and ${callbacks.rowCount} pending callbacks with lead details.`;
+    console.log("LEADS UPLOADED:", { list, saved: leads.length, skipped: skipped.length, retries: retries.rowCount, callbacks: callbacks.rowCount });
+    res.send(msg);
+  } catch (err) {
+    console.error("Lead upload error:", err);
+    res.status(500).send("Upload failed. Check the server logs.");
+  }
+});
+
 // Calls before this date (the old Aug/Sep setup) never appear in reports.
 const REPORT_SINCE = new Date(process.env.REPORT_SINCE || "2026-11-01T00:00:00Z");
 
@@ -803,12 +925,13 @@ app.get("/reports/calls.csv", async (req, res) => {
     }
 
     const { rows } = await pool.query(
-      `SELECT call_id, phone, disconnection_reason, duration_ms, prospect_outcome, in_voicemail,
-              call_successful, transcript, summary, user_sentiment, details, created_at
-       FROM call_log
-       WHERE (created_at > NOW() - ($1 || ' days')::interval OR call_id = ANY($2))
-         AND created_at >= $3
-       ORDER BY created_at DESC`,
+      `SELECT c.call_id, c.phone, c.disconnection_reason, c.duration_ms, c.prospect_outcome, c.in_voicemail,
+              c.call_successful, c.transcript, c.summary, c.user_sentiment, c.details, c.created_at,
+              l.vars AS lead_vars
+       FROM call_log c LEFT JOIN leads l ON l.phone = c.phone
+       WHERE (c.created_at > NOW() - ($1 || ' days')::interval OR c.call_id = ANY($2))
+         AND c.created_at >= $3
+       ORDER BY c.created_at DESC`,
       [String(days), extraIds, REPORT_SINCE]
     );
     console.log("CALL REPORT:", { days, rows: rows.length, backfilled: fetched, backfill_failed: failed });
@@ -817,7 +940,8 @@ app.get("/reports/calls.csv", async (req, res) => {
     res.set("Content-Type", "text/csv; charset=utf-8");
     res.set("Content-Disposition", `attachment; filename="ripik-calls-${stamp}.csv"`);
     res.set("Cache-Control", "no-store");
-    res.send("\uFEFF" + toCsv(rows.map(reportRow)));
+    const merged = rows.map(r => ({ ...r, details: { ...(r.lead_vars || {}), ...stripNulls(r.details || {}) } }));
+    res.send("\uFEFF" + toCsv(merged.map(reportRow)));
   } catch (err) {
     console.error("Call report error:", err);
     res.status(500).send("Report failed. Check the server logs.");
@@ -871,12 +995,20 @@ app.post("/retell-webhook", requireRetell, async (req, res) => {
     const automaticRetryAllowed = customAnalysis?.automatic_retry_allowed === true;
     const demoIntentIncomplete =
       customAnalysis?.demo_intent_incomplete === true || customAnalysis?.demo_intent_incomplete === "true";
-    const name = call?.retell_llm_dynamic_variables?.prospect_name || null;
+    // Lead details: from the call itself, else from the uploaded call list
+    // (Retell's dialer does not include them in the webhook).
+    let leadVars = leadVariables(call?.retell_llm_dynamic_variables);
+    if (!leadVars.prospect_name) leadVars = { ...(await lookupLeadVars(phone)), ...leadVars };
+    const name = leadVars.prospect_name || null;
 
     // Which follow-up (if any) this call earns. See lib/followUp.js.
     const plan = retryPlan({ disconnectReason, inVoicemail, prospectOutcome, automaticRetryAllowed, demoIntentIncomplete });
     const shouldRetry = plan.retry;
-    const leadVars = leadVariables(call?.retell_llm_dynamic_variables);
+
+    // Asked for a callback but no time got booked: book the next weekday.
+    if (prospectOutcome === "callback_requested") {
+      await ensureCallback({ phone, name, leadVars, callId });
+    }
 
     // ---------------------------------------------------------
     // STEP A — Is this call already part of an existing retry chain?
@@ -1282,6 +1414,14 @@ async function initDatabase() {
     )
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS call_log_phone_created_idx ON call_log (phone, created_at)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS leads (
+      phone TEXT PRIMARY KEY,
+      vars JSONB NOT NULL DEFAULT '{}'::jsonb,
+      list_name TEXT,
+      uploaded_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
   await pool.query(`ALTER TABLE call_log ADD COLUMN IF NOT EXISTS transcript TEXT`);
   await pool.query(`ALTER TABLE call_log ADD COLUMN IF NOT EXISTS summary TEXT`);
   await pool.query(`ALTER TABLE call_log ADD COLUMN IF NOT EXISTS user_sentiment TEXT`);
