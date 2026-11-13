@@ -768,6 +768,9 @@ function reportTokenOk(given) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+// Calls before this date (the old Aug/Sep setup) never appear in reports.
+const REPORT_SINCE = new Date(process.env.REPORT_SINCE || "2026-11-01T00:00:00Z");
+
 app.get("/reports/calls.csv", async (req, res) => {
   if (!reportTokenOk(req.query.token)) return res.status(404).send("Not found");
   try {
@@ -779,9 +782,10 @@ app.get("/reports/calls.csv", async (req, res) => {
     const missing = await pool.query(
       `SELECT call_id FROM call_log
        WHERE created_at > NOW() - ($1 || ' days')::interval
+         AND created_at >= $2
          AND transcript IS NULL AND COALESCE(duration_ms, 0) > 0
        ORDER BY created_at DESC LIMIT 300`,
-      [String(days)]
+      [String(days), REPORT_SINCE]
     );
     const toFetch = [...new Set([...missing.rows.map(r => r.call_id), ...extraIds])];
     let fetched = 0, failed = 0;
@@ -789,7 +793,11 @@ app.get("/reports/calls.csv", async (req, res) => {
       const batch = toFetch.slice(i, i + 4);
       const results = await Promise.allSettled(batch.map(fetchRetellCall));
       for (const r of results) {
-        if (r.status === "fulfilled") { await recordCall(r.value); fetched++; }
+        if (r.status === "fulfilled") {
+          // Skip anything from before the report start date (old setup).
+          if (Number.isFinite(r.value.start_timestamp) && r.value.start_timestamp < REPORT_SINCE.getTime()) continue;
+          await recordCall(r.value); fetched++;
+        }
         else { failed++; console.error("REPORT BACKFILL:", r.reason?.message); }
       }
     }
@@ -798,9 +806,10 @@ app.get("/reports/calls.csv", async (req, res) => {
       `SELECT call_id, phone, disconnection_reason, duration_ms, prospect_outcome, in_voicemail,
               call_successful, transcript, summary, user_sentiment, details, created_at
        FROM call_log
-       WHERE created_at > NOW() - ($1 || ' days')::interval OR call_id = ANY($2)
+       WHERE (created_at > NOW() - ($1 || ' days')::interval OR call_id = ANY($2))
+         AND created_at >= $3
        ORDER BY created_at DESC`,
-      [String(days), extraIds]
+      [String(days), extraIds, REPORT_SINCE]
     );
     console.log("CALL REPORT:", { days, rows: rows.length, backfilled: fetched, backfill_failed: failed });
 

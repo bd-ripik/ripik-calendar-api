@@ -62,4 +62,5 @@ https://<your-railway-domain>/reports/calls.csv?token=<REPORT_TOKEN>&days=7
 - `days`: how far back to go (1–60, default 7).
 - `call_ids`: optional comma-separated Retell call IDs to include even if older.
 - Connected calls without a stored transcript are fetched from Retell on the fly (backfill).
+- Calls before `REPORT_SINCE` (default 2026-11-01, i.e. the old Aug/Sep setup) never appear.
 - The route returns 404 unless `REPORT_TOKEN` (20+ characters) is set and matches. Transcripts contain personal data: keep the link private.
