@@ -48,3 +48,18 @@ npm test
 ```
 
 The tests cover phone normalisation, signature checks, calling windows, time zone resolution and demo slot suggestions.
+
+## Call report (transcripts)
+
+Every call's transcript, summary and outcome are stored in `call_log` when Retell sends the webhook.
+
+Download them as a CSV (opens in Excel):
+
+```
+https://<your-railway-domain>/reports/calls.csv?token=<REPORT_TOKEN>&days=7
+```
+
+- `days`: how far back to go (1–60, default 7).
+- `call_ids`: optional comma-separated Retell call IDs to include even if older.
+- Connected calls without a stored transcript are fetched from Retell on the fly (backfill).
+- The route returns 404 unless `REPORT_TOKEN` (20+ characters) is set and matches. Transcripts contain personal data: keep the link private.

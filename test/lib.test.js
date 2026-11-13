@@ -243,3 +243,23 @@ test("callback time parsing handles DST and odd input", () => {
   assert.equal(parseCallbackTime("2026-11-11 15:00:00", "America/Los_Angeles").toISOString(), "2026-11-11T23:00:00.000Z");
   assert.equal(parseCallbackTime("", "America/Chicago"), null);
 });
+
+test("call report extracts details and writes safe CSV", () => {
+  const { callDetails, reportRow, toCsv } = require("../lib/callReport");
+  const d = callDetails({
+    call_id: "call_1", direction: "outbound", agent_version: 52, transcript: "Agent: Hi, Mike\nUser: who's this?",
+    call_analysis: { call_summary: "Short call", user_sentiment: "Neutral", custom_analysis_data: { main_objection: "none" } },
+    retell_llm_dynamic_variables: { prospect_name: "Mike Hosley", company: "Granite Construction", industry: "Quarrying", callback_context: "" }
+  });
+  assert.equal(d.transcript, "Agent: Hi, Mike\nUser: who's this?");
+  assert.equal(d.details.company, "Granite Construction");
+  assert.equal(d.details.callback_context, null);
+
+  const row = reportRow({ call_id: "call_1", phone: "+16613324568", duration_ms: 36000, created_at: "2026-11-12T16:00:00Z", transcript: d.transcript, summary: "=HYPERLINK(\"x\")", details: d.details });
+  assert.equal(row.duration_s, 36);
+  assert.equal(row.call_type, "outbound");
+  const csv = toCsv([row]);
+  assert.match(csv, /"Agent: Hi, Mike\nUser: who's this\?"/);   // multi-line cell quoted
+  assert.match(csv, /,\+16613324568,/);                          // phone not mangled
+  assert.match(csv, /"'=HYPERLINK\(""x""\)"/);                   // formula neutralised
+});
