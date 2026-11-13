@@ -1,6 +1,7 @@
 require("dotenv").config();
 require("isomorphic-fetch");
 
+const crypto = require("crypto");
 const express = require("express");
 const { Pool } = require("pg");
 const { DateTime } = require("luxon");
@@ -17,6 +18,7 @@ const {
   callbackWindowFor
 } = require("./lib/callingWindow");
 const { resolveTimeZone } = require("./lib/timezones");
+const { callDetails, reportRow, toCsv } = require("./lib/callReport");
 const { parseCallbackTime, leadVariables, leadTimeZone, followUpWindow, retryPlan, continueChain, firstDelayMs, nextDelayMs: nextRetryDelayMs, retryContext } = require("./lib/followUp");
 const { pickFreeSlots, pickAround, combineAvailability, isPlausibleEmail, formatSlot } = require("./lib/booking");
 
@@ -706,11 +708,13 @@ async function recordCall(call) {
   const phone = normalizePhone(call.direction === "inbound" ? call.from_number : call.to_number);
   const analysis = call.call_analysis || {};
   const custom = analysis.custom_analysis_data || {};
+  const extra = callDetails(call) || {};
 
   await pool.query(
     `INSERT INTO call_log
-       (call_id, phone, disconnection_reason, duration_ms, prospect_outcome, in_voicemail, call_successful, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE(to_timestamp($8 / 1000.0), NOW()))
+       (call_id, phone, disconnection_reason, duration_ms, prospect_outcome, in_voicemail, call_successful,
+        transcript, summary, user_sentiment, details, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE(to_timestamp($12 / 1000.0), NOW()))
      ON CONFLICT (call_id) DO UPDATE SET
        phone = COALESCE(EXCLUDED.phone, call_log.phone),
        disconnection_reason = COALESCE(EXCLUDED.disconnection_reason, call_log.disconnection_reason),
@@ -718,6 +722,10 @@ async function recordCall(call) {
        prospect_outcome = COALESCE(EXCLUDED.prospect_outcome, call_log.prospect_outcome),
        in_voicemail = COALESCE(EXCLUDED.in_voicemail, call_log.in_voicemail),
        call_successful = COALESCE(EXCLUDED.call_successful, call_log.call_successful),
+       transcript = COALESCE(EXCLUDED.transcript, call_log.transcript),
+       summary = COALESCE(EXCLUDED.summary, call_log.summary),
+       user_sentiment = COALESCE(EXCLUDED.user_sentiment, call_log.user_sentiment),
+       details = COALESCE(call_log.details, '{}'::jsonb) || COALESCE(EXCLUDED.details, '{}'::jsonb),
        updated_at = NOW()`,
     [
       call.call_id,
@@ -727,10 +735,94 @@ async function recordCall(call) {
       custom.prospect_outcome || null,
       typeof analysis.in_voicemail === "boolean" ? analysis.in_voicemail : null,
       typeof analysis.call_successful === "boolean" ? analysis.call_successful : null,
+      extra.transcript || null,
+      extra.summary || null,
+      extra.user_sentiment || null,
+      extra.details ? JSON.stringify(stripNulls(extra.details)) : null,
       Number.isFinite(call.start_timestamp) ? call.start_timestamp : null
     ]
   );
 }
+
+function stripNulls(obj) {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== null && v !== undefined));
+}
+
+// Fetch one call (with transcript and analysis) from Retell.
+async function fetchRetellCall(callId) {
+  const response = await fetch(`https://api.retellai.com/v2/get-call/${encodeURIComponent(callId)}`, {
+    headers: { Authorization: `Bearer ${process.env.RETELL_API_KEY}` }
+  });
+  if (!response.ok) throw new Error(`get-call ${callId}: HTTP ${response.status}`);
+  return response.json();
+}
+
+// Report: GET /reports/calls.csv?token=...&days=7
+// Transcripts contain personal data, so the route only exists when
+// REPORT_TOKEN is set, and the token must match.
+function reportTokenOk(given) {
+  const expected = process.env.REPORT_TOKEN || "";
+  if (expected.length < 20 || typeof given !== "string") return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// Calls before this date (the old Aug/Sep setup) never appear in reports.
+const REPORT_SINCE = new Date(process.env.REPORT_SINCE || "2026-11-01T00:00:00Z");
+
+app.get("/reports/calls.csv", async (req, res) => {
+  if (!reportTokenOk(req.query.token)) return res.status(404).send("Not found");
+  try {
+    const days = Math.min(Math.max(parseInt(req.query.days, 10) || 7, 1), 60);
+    const extraIds = String(req.query.call_ids || "")
+      .split(",").map(x => x.trim()).filter(x => /^call_[A-Za-z0-9]+$/.test(x)).slice(0, 50);
+
+    // Backfill: connected calls without a transcript yet, plus any ids asked for.
+    const missing = await pool.query(
+      `SELECT call_id FROM call_log
+       WHERE created_at > NOW() - ($1 || ' days')::interval
+         AND created_at >= $2
+         AND transcript IS NULL AND COALESCE(duration_ms, 0) > 0
+       ORDER BY created_at DESC LIMIT 300`,
+      [String(days), REPORT_SINCE]
+    );
+    const toFetch = [...new Set([...missing.rows.map(r => r.call_id), ...extraIds])];
+    let fetched = 0, failed = 0;
+    for (let i = 0; i < toFetch.length; i += 4) {
+      const batch = toFetch.slice(i, i + 4);
+      const results = await Promise.allSettled(batch.map(fetchRetellCall));
+      for (const r of results) {
+        if (r.status === "fulfilled") {
+          // Skip anything from before the report start date (old setup).
+          if (Number.isFinite(r.value.start_timestamp) && r.value.start_timestamp < REPORT_SINCE.getTime()) continue;
+          await recordCall(r.value); fetched++;
+        }
+        else { failed++; console.error("REPORT BACKFILL:", r.reason?.message); }
+      }
+    }
+
+    const { rows } = await pool.query(
+      `SELECT call_id, phone, disconnection_reason, duration_ms, prospect_outcome, in_voicemail,
+              call_successful, transcript, summary, user_sentiment, details, created_at
+       FROM call_log
+       WHERE (created_at > NOW() - ($1 || ' days')::interval OR call_id = ANY($2))
+         AND created_at >= $3
+       ORDER BY created_at DESC`,
+      [String(days), extraIds, REPORT_SINCE]
+    );
+    console.log("CALL REPORT:", { days, rows: rows.length, backfilled: fetched, backfill_failed: failed });
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.set("Content-Type", "text/csv; charset=utf-8");
+    res.set("Content-Disposition", `attachment; filename="ripik-calls-${stamp}.csv"`);
+    res.set("Cache-Control", "no-store");
+    res.send("\uFEFF" + toCsv(rows.map(reportRow)));
+  } catch (err) {
+    console.error("Call report error:", err);
+    res.status(500).send("Report failed. Check the server logs.");
+  }
+});
 
 app.post("/retell-webhook", requireRetell, async (req, res) => {
   try {
@@ -1190,6 +1282,10 @@ async function initDatabase() {
     )
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS call_log_phone_created_idx ON call_log (phone, created_at)`);
+  await pool.query(`ALTER TABLE call_log ADD COLUMN IF NOT EXISTS transcript TEXT`);
+  await pool.query(`ALTER TABLE call_log ADD COLUMN IF NOT EXISTS summary TEXT`);
+  await pool.query(`ALTER TABLE call_log ADD COLUMN IF NOT EXISTS user_sentiment TEXT`);
+  await pool.query(`ALTER TABLE call_log ADD COLUMN IF NOT EXISTS details JSONB DEFAULT '{}'::jsonb`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS demo_bookings (
