@@ -263,3 +263,24 @@ test("call report extracts details and writes safe CSV", () => {
   assert.match(csv, /,\+16613324568,/);                          // phone not mangled
   assert.match(csv, /"'=HYPERLINK\(""x""\)"/);                   // formula neutralised
 });
+
+test("leads CSV parsing and default callback time", () => {
+  const { leadsFromCsv, parseCsv } = require("../lib/leads");
+  const { defaultCallbackTime } = require("../lib/followUp");
+  const csv = '﻿phone_number,prospect_name,title,company,industry,email,city,state,country\r\n' +
+    '+18432760687,Daron Robinson,Plant Superintendent,"Ingevity, Inc.",Chemicals,daron@x.com,North Charleston,South Carolina,United States\r\n' +
+    '18432760687,Dup,,,,,,,\r\n' +
+    'not-a-phone,Bad,,,,,,,\r\n';
+  const { leads, skipped, error } = leadsFromCsv(csv);
+  assert.equal(error, null);
+  assert.equal(leads.length, 1);
+  assert.equal(leads[0].phone, "+18432760687");
+  assert.equal(leads[0].vars.company, "Ingevity, Inc.");
+  assert.equal(skipped.length, 1);
+  assert.deepEqual(parseCsv('a,"b ""q""",c\nd,e,f'), [["a", 'b "q"', "c"], ["d", "e", "f"]]);
+
+  // Thu 12 Nov 2026 8:31 AM Eastern -> Fri 9:00 AM Eastern.
+  assert.equal(defaultCallbackTime(new Date("2026-11-12T13:31:00Z"), "America/New_York").toISOString(), "2026-11-13T14:00:00.000Z");
+  // Fri 3:10 PM Central -> Mon 3:15 PM Central.
+  assert.equal(defaultCallbackTime(new Date("2026-11-13T21:10:00Z"), "America/Chicago").toISOString(), "2026-11-16T21:15:00.000Z");
+});
