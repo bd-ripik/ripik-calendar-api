@@ -948,6 +948,42 @@ app.get("/reports/calls.csv", async (req, res) => {
   }
 });
 
+// Outcomes after which a returned (inbound) call needs no callback.
+const INBOUND_SETTLED = new Set(["demo_booked", "not_interested", "wrong_person", "do_not_call", "dnd"]);
+const RETURNED_CALL_CONTEXT =
+  "They called you back after missing your earlier call, but you didn't get to talk properly. Thank them for calling back.";
+
+// Retell asks this before answering a call to our number. We tell Sarah who is
+// calling (from the uploaded call lists) and that they are returning her call.
+// It always answers 200 quickly, so a failure here never leaves a caller ringing.
+app.post("/retell-inbound", async (req, res) => {
+  const variables = { call_direction: "inbound" };
+  try {
+    const signed = !CONFIG.requireSignature || verifyRetellSignature(
+      req.rawBody || "",
+      process.env.RETELL_API_KEY,
+      req.get("x-retell-signature")
+    );
+    const inboundCall = (req.body && req.body.call_inbound) || {};
+    const caller = normalizePhone(inboundCall.from_number);
+    if (signed && caller) {
+      const lead = await lookupLeadVars(caller);
+      for (const [key, value] of Object.entries(lead)) {
+        if (typeof value === "string" && value.trim()) variables[key] = value.trim();
+      }
+      variables.user_number = caller;
+      variables.callback_context =
+        "This person is calling you back. They missed an earlier call or voicemail from you.";
+    } else if (!signed) {
+      console.warn("INBOUND WEBHOOK: invalid signature, answering without lead details");
+    }
+    console.log("INBOUND CALL:", { caller, known: Boolean(variables.prospect_name) });
+  } catch (err) {
+    console.error("Inbound webhook error:", err.message);
+  }
+  res.status(200).json({ call_inbound: { dynamic_variables: variables } });
+});
+
 app.post("/retell-webhook", requireRetell, async (req, res) => {
   try {
     const { event, call } = req.body || {};
@@ -968,7 +1004,9 @@ app.post("/retell-webhook", requireRetell, async (req, res) => {
     }
 
     const callId = call?.call_id;
-    const phone = normalizePhone(call?.to_number);
+    const inbound = call?.direction === "inbound";
+    // The prospect's number: the caller on inbound calls, the dialled number otherwise.
+    const phone = normalizePhone(inbound ? call?.from_number : call?.to_number);
     const disconnectReason = call?.disconnection_reason;
     const analysis = call?.call_analysis;
     const customAnalysis = analysis?.custom_analysis_data;
@@ -1008,6 +1046,20 @@ app.post("/retell-webhook", requireRetell, async (req, res) => {
     // Asked for a callback but no time got booked: book the next weekday.
     if (prospectOutcome === "callback_requested") {
       await ensureCallback({ phone, name, leadVars, callId });
+    }
+
+    // Someone returned Sarah's call. Inbound calls never start retry chains;
+    // unless the call settled things, Sarah calls them back next weekday.
+    if (inbound) {
+      if (!INBOUND_SETTLED.has(prospectOutcome)) {
+        await ensureCallback({
+          phone,
+          name,
+          leadVars: { ...leadVars, callback_context: RETURNED_CALL_CONTEXT },
+          callId
+        });
+      }
+      return res.status(200).json({ success: true, retry_scheduled: false, inbound: true });
     }
 
     // ---------------------------------------------------------
@@ -1220,7 +1272,7 @@ async function processDueCallbacks() {
           phone: callback.phone,
           name: callback.name,
           purpose: "callback",
-          variables: { ...(callback.lead_vars || {}), callback_context: "The prospect previously asked to be called back." }
+          variables: { callback_context: "The prospect previously asked to be called back.", ...(callback.lead_vars || {}) }
         });
 
         if (result.blocked) {

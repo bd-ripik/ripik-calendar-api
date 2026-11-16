@@ -90,9 +90,15 @@ The columns below become the dynamic variables of the same name. Send each lead 
 phone_number,prospect_name,title,company,industry,email,city,state,country
 ```
 
-## 7. Inbound calls
+## 7. Inbound calls (people returning Sarah's call)
 
-Check what happens when someone calls back `+1 447 226 1059`. People often return a missed call. If no agent answers inbound calls on that number, assign one (the same Sarah agent works), so those callers can book a demo too.
+Sarah's voicemail asks people to call back on `+1 447 226 1059`, so returned calls are the warmest leads. On calls Sarah places she waits for the prospect to speak; on a returned call she must speak first, so inbound uses its own copy of the agent.
+
+1. **Inbound agent:** in Agents, duplicate the Sarah agent and name it "Sarah - Inbound". In the copy, set the welcome message to **AI speaks first** with this static message: `Hi, this is Sarah with Ripik, thanks for calling back!` Paste the same prompt as the main agent and publish. Whenever the main prompt changes, paste it into this copy too.
+2. **Phone number:** Phone Numbers → `+1 447 226 1059` → Inbound call agent: **Sarah - Inbound** (newest version). Outbound stays on the main agent.
+3. **Inbound webhook:** on the same page, turn on the inbound webhook and set the URL to `https://ripik-calendar-api-production.up.railway.app/retell-inbound`. It tells Sarah who is calling (from the uploaded call lists) and that they are returning her call.
+
+After a returned call, the server never starts a retry chain. Unless the call settled things (demo booked, not interested, wrong person, do not call), it books a callback for the next weekday at the same local time, and Sarah opens it with "Thanks for trying me back earlier".
 
 ## Voicemail message (agent → Voicemail → Leave a message)
 
