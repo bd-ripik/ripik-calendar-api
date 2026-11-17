@@ -18,6 +18,7 @@ const {
   callbackWindowFor
 } = require("./lib/callingWindow");
 const { resolveTimeZone } = require("./lib/timezones");
+const { summarizeCalls, warnings, renderSummaryPage, personLine } = require("./lib/dailySummary");
 const { callDetails, reportRow, toCsv } = require("./lib/callReport");
 const { leadsFromCsv } = require("./lib/leads");
 const { defaultCallbackTime, parseCallbackTime, leadVariables, leadTimeZone, followUpWindow, retryPlan, continueChain, firstDelayMs, nextDelayMs: nextRetryDelayMs, retryContext } = require("./lib/followUp");
@@ -893,6 +894,80 @@ app.post("/leads/upload", async (req, res) => {
 // Calls before this date (the old Aug/Sep setup) never appear in reports.
 const REPORT_SINCE = new Date(process.env.REPORT_SINCE || "2026-11-01T00:00:00Z");
 
+// Calls that could not be started (for example, Retell out of credit), kept in
+// memory for the daily summary page.
+const dialErrors = [];
+function noteDialError(err) {
+  dialErrors.push({ at: Date.now(), message: String((err && err.message) || err).slice(0, 200) });
+  while (dialErrors.length > 200) dialErrors.shift();
+}
+
+// A phone-friendly page: is calling healthy, who needs a human, and the numbers.
+app.get("/reports/today", async (req, res) => {
+  if (!reportTokenOk(req.query.token)) return res.status(404).send("Not found");
+  try {
+    const hours = Math.min(Math.max(parseInt(req.query.hours, 10) || 24, 1), 168);
+    const since = new Date(Date.now() - hours * 3600 * 1000);
+
+    const calls = (await pool.query(
+      `SELECT call_id, phone, disconnection_reason, duration_ms, prospect_outcome, in_voicemail, summary, details, created_at
+       FROM call_log WHERE created_at >= $1 ORDER BY created_at DESC`, [since]
+    )).rows;
+    const stats = summarizeCalls(calls);
+
+    const demos = (await pool.query(
+      `SELECT name, email, start_utc FROM demo_bookings
+       WHERE status = 'booked' AND created_at >= $1 ORDER BY start_utc`, [since]
+    )).rows;
+
+    const needsYou = [];
+    for (const r of calls) {
+      const d = r.details || {};
+      if (r.disconnection_reason === "credit_exhausted") continue;
+      let label = null;
+      if (d.direction === "inbound") label = "Called us back";
+      else if (r.prospect_outcome === "callback_requested") label = "Asked for a callback (Sarah books it automatically)";
+      else if (r.prospect_outcome === "referral_given") label = "Gave a referral";
+      else if (d.demo_intent_incomplete === true) label = "Wanted a demo, but it didn't get booked";
+      if (label) needsYou.push({ label, html: personLine(r), summary: r.summary || "" });
+    }
+
+    const pendingCallbacks = (await pool.query(
+      `SELECT COUNT(*)::int AS n FROM callbacks WHERE status IN ('pending','dialing')`)).rows[0].n;
+    const failedCallbacks = (await pool.query(
+      `SELECT COUNT(*)::int AS n FROM callbacks WHERE status = 'failed' AND updated_at >= $1`, [since])).rows[0].n;
+    const queuedRetries = (await pool.query(
+      `SELECT COUNT(*)::int AS n FROM call_retries WHERE status IN ('pending','waiting_result','processing')`)).rows[0].n;
+
+    // Did the period include US calling hours (Mon–Fri, 9–17 Central)?
+    let isWeekday = false;
+    for (let t = since.getTime(); t <= Date.now(); t += 3600 * 1000) {
+      const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", weekday: "short", hour: "numeric", hour12: false })
+        .formatToParts(new Date(t));
+      const wd = parts.find(p => p.type === "weekday").value;
+      const hr = parseInt(parts.find(p => p.type === "hour").value, 10);
+      if (!["Sat", "Sun"].includes(wd) && hr >= 10 && hr < 16) { isWeekday = true; break; }
+    }
+
+    const recentDialErrors = dialErrors.filter(e => e.at >= since.getTime());
+    const html = renderSummaryPage({
+      hours,
+      generatedAt: new Date(),
+      stats,
+      warningsList: warnings({ stats, dialErrors: recentDialErrors, failedCallbacks, isWeekday }),
+      demos,
+      needsYou: needsYou.slice(0, 50),
+      pendingCallbacks,
+      queuedRetries,
+      csvLink: `/reports/calls.csv?token=${encodeURIComponent(req.query.token)}&days=${Math.max(1, Math.ceil(hours / 24))}`
+    });
+    res.set("Cache-Control", "no-store").type("html").send(html);
+  } catch (err) {
+    console.error("SUMMARY PAGE ERROR:", err);
+    res.status(500).send("Summary failed: " + err.message);
+  }
+});
+
 app.get("/reports/calls.csv", async (req, res) => {
   if (!reportTokenOk(req.query.token)) return res.status(404).send("Not found");
   try {
@@ -1291,6 +1366,7 @@ async function processDueCallbacks() {
         console.log("CALLBACK PLACED:", { id: callback.id, call_id: result.call_id });
       } catch (err) {
         console.error(`Callback failed for ID ${callback.id}:`, err.message);
+        noteDialError(err);
         await pool.query(`UPDATE callbacks SET status = 'failed', updated_at = NOW() WHERE id = $1`, [callback.id]);
         console.log(`CALLBACK MARKED FAILED - MANUAL REVIEW REQUIRED: ${callback.id}`);
       }
@@ -1385,6 +1461,7 @@ async function processDueRetries() {
         console.log("AUTO RETRY PLACED:", { id: retry.id, retry_type: retryType, call_id: result.call_id });
       } catch (err) {
         console.error(`Automatic retry failed for ID ${retry.id}:`, err.message);
+        noteDialError(err);
         await pool.query(
           `UPDATE call_retries SET status = 'pending', next_retry_time = NOW() + INTERVAL '30 minutes',
              updated_at = NOW() WHERE id = $1`,
